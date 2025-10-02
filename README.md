@@ -59,15 +59,17 @@ create table if not exists usuarios (
 - `src/lib/api.ts`: helper de auth en el cliente.
 - `vite.config.ts`: proxy `/api` a `http://localhost:3001` en dev.
 
-## Producción
-- Railway: este repo incluye Dockerfile y Procfile para que se construya y ejecute automáticamente.
-  1) Crea un repositorio en GitHub y sube el código (ver abajo).
-  2) En Railway: New Project -> Deploy from GitHub -> selecciona el repo.
-  3) Agrega variables de entorno en Railway (Dashboard -> Variables):
-     - PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, PGSSL=true
-     - PORT=3001
-     - JWT_SECRET (valor seguro)
-  4) Railway expondrá el puerto 3001. El contenedor sirve el frontend estático desde /dist y el backend en /api.
+## Producción (Nixpacks en Railway)
+- El repo usa Nixpacks (railway.json + nixpacks.toml).
+  1) Conecta tu repo de GitHub en Railway.
+  2) Railway detectará Node y ejecutará:
+    - npm ci
+    - npm run build
+    - start: node server/index.js
+  3) Variables en Railway (Dashboard → Variables):
+    - PGHOST, PGPORT=5432, PGDATABASE, PGUSER, PGPASSWORD, PGSSL=true
+    - JWT_SECRET (valor seguro)
+  4) No definas PORT (Railway la provee automática). El server usará process.env.PORT.
 
 ### Subir a GitHub (Windows PowerShell)
 ```powershell
