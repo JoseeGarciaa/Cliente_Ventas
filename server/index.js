@@ -13,6 +13,8 @@ app.use(express.json());
 app.use(cors({ origin: true, credentials: true }));
 
 // PG Pool
+const sslFlag = String(process.env.PGSSL || '').trim().toLowerCase();
+const useSSL = sslFlag === 'true' || sslFlag === '1' || sslFlag === 'yes' || sslFlag === 'on';
 const pool = new Pool({
   host: process.env.PGHOST,
   port: Number(process.env.PGPORT || 5432),
@@ -20,7 +22,7 @@ const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   max: 10,
-  ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined,
+  ssl: useSSL ? { rejectUnauthorized: false } : undefined,
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
@@ -161,4 +163,11 @@ if (process.env.NODE_ENV === 'production') {
 }
 app.listen(port, '0.0.0.0', () => {
   console.log(`API listening on 0.0.0.0:${port} (ENV PORT=${process.env.PORT || 'not-set'})`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UnhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UncaughtException:', err);
 });
