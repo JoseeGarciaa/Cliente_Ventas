@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { login as loginRequest } from '../lib/api';
 
 type Props = {
   onSuccess: (payload: { token: string; user: any; tenant: string }) => void;
@@ -15,16 +16,7 @@ export default function Login({ onSuccess }: Props) {
     setError(null);
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || 'Error iniciando sesión');
-      }
-      const data = await res.json();
+      const data = await loginRequest({ email, password });
       onSuccess(data);
     } catch (err: any) {
       setError(err.message || 'Error desconocido');
