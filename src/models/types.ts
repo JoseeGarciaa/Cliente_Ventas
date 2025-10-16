@@ -28,6 +28,8 @@ export type EstadoVenta =
   | string;
 export type EstadoCredito = 'activo' | 'pagado' | 'cancelado' | 'mora' | string;
 export type EstadoCuotaCredito = 'pendiente' | 'pagada' | 'vencida' | string;
+// Usar los mismos estados que Ventas para compatibilidad con triggers
+export type EstadoEnvio = 'pendiente' | 'confirmada' | 'enviada' | 'entregada' | 'cancelada' | 'devuelta' | string;
 
 export interface Cliente {
   id: number;
@@ -217,13 +219,120 @@ export interface UpdateVentaPayload {
 }
 
 export interface Envio {
-  id: string;
-  venta_id: string;
-  direccion: string;
-  ciudad: string;
-  estado: 'preparando' | 'en_camino' | 'entregado';
-  fecha_estimada: string;
-  created_at: string;
+  id: number;
+  VentaId: number;
+  DireccionEntrega: string;
+  FechaEnvio: string | null;
+  FechaEntrega: string | null;
+  OperadorLogistico: string | null;
+  NumeroGuia: string | null;
+  Observaciones: string | null;
+  Ciudad: string | null;
+  Departamento: string | null;
+  Barrio: string | null;
+  Estado: EstadoEnvio;
+  Calificacion: CalificacionCliente;
+  venta?: EnvioVentaInfo;
+  cliente?: EnvioClienteInfo;
+}
+
+export interface EnvioVentaInfo {
+  id: number;
+  numero: number;
+  fecha: string | null;
+  total: number;
+  estado: EstadoVenta | string;
+  tipoVenta: TipoVenta | string;
+}
+
+export interface EnvioClienteInfo {
+  id: number;
+  nombre: string;
+  telefono: string | null;
+  correo: string | null;
+  direccion: string | null;
+  ciudad: string | null;
+  departamento: string | null;
+  barrio: string | null;
+}
+
+export interface CreateEnvioPayload {
+  VentaId: number;
+  DireccionEntrega: string;
+  FechaEnvio?: string;
+  FechaEntrega?: string;
+  OperadorLogistico?: string;
+  NumeroGuia?: string;
+  Observaciones?: string;
+  Ciudad?: string;
+  Departamento?: string;
+  Barrio?: string;
+  Estado?: EstadoEnvio;
+  Calificacion?: CalificacionCliente;
+}
+
+export interface UpdateEnvioPayload {
+  DireccionEntrega?: string;
+  FechaEnvio?: string;
+  FechaEntrega?: string;
+  OperadorLogistico?: string;
+  NumeroGuia?: string;
+  Observaciones?: string;
+  Ciudad?: string;
+  Departamento?: string;
+  Barrio?: string;
+  Estado?: EstadoEnvio;
+  Calificacion?: CalificacionCliente;
+}
+
+export interface EnviosStats {
+  totalEnvios: number;
+  pendientes: number;
+  confirmados: number;
+  enviados: number;
+  entregados: number;
+  cancelados: number;
+  devueltos: number;
+}
+
+export interface EnviosResponse {
+  envios: Envio[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+}
+
+export interface VentaSinEnvio {
+  id: number;
+  fecha: string;
+  total: number;
+  tipoVenta: TipoVenta;
+  estado: EstadoVenta;
+  cliente: {
+    id: number;
+    nombre: string;
+    telefono: string | null;
+    correo: string | null;
+    direccion: string | null;
+    ciudad: string | null;
+    departamento: string | null;
+    barrio: string | null;
+    tipoIdentificacion: TipoIdentificacion;
+    numeroDocumento: string;
+  };
+}
+
+export interface VentasSinEnvioResponse {
+  ventas: VentaSinEnvio[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
 }
 
 export interface CuotaCredito {

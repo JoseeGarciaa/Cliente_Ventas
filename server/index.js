@@ -382,6 +382,44 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+// Test endpoint without auth to verify frontend-backend communication
+app.get('/api/test-ventas-sin-auth', async (req, res) => {
+  try {
+    console.log('🧪 Test endpoint called - checking ventas without auth');
+    // Use a default tenant for testing - you might need to adjust this
+    const result = await withTenantClient('tenant_base', async (db) => {
+      const ventasQuery = `
+        SELECT 
+          v.id,
+          v.fecha,
+          v.total,
+          v."TipoVenta",
+          v."Estado" as venta_estado,
+          c.nombres || ' ' || c.apellidos as cliente_nombre
+        FROM "Ventas" v
+        INNER JOIN "Clientes" c ON v."ClienteId" = c.id
+  LEFT JOIN "Envios" e ON v.id = e."VentaId"
+  WHERE e."VentaId" IS NULL
+        ORDER BY v.fecha DESC
+        LIMIT 10
+      `;
+
+      const ventasResult = await db.query(ventasQuery);
+      console.log('📊 Found ventas:', ventasResult.rows.length);
+      
+      return {
+        ventas: ventasResult.rows,
+        count: ventasResult.rows.length
+      };
+    });
+
+    res.json(result);
+  } catch (e) {
+    console.error('❌ Error in test endpoint:', e);
+    res.status(500).send('Error: ' + e.message);
+  }
+});
+
 // Auth: login
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
@@ -2107,6 +2145,562 @@ app.delete('/api/inventario/productos/:id', auth, async (req, res) => {
     }
     console.error(e);
     res.status(500).send('No se pudo eliminar el producto');
+  }
+});
+
+// ===== ENVIOS ENDPOINTS =====
+
+// GET /api/envios - Obtener todos los envíos con paginación y filtros
+app.get('/api/envios', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+    const { page = 1, limit = 50, estado, ventaId, ciudad } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const result = await withTenantClient(tenant, async (db) => {
+      let baseQuery = `
+        SELECT 
+          e.*,
+          v.id as venta_id,
+          v."Fecha" as venta_fecha,
+          v."Total" as venta_total,
+          v."Estado" as venta_estado,
+          v."TipoVenta" as venta_tipo,
+          c.id as cliente_id,
+          c."Nombres" as cliente_nombres,
+          c."Apellidos" as cliente_apellidos,
+          c."Telefono" as cliente_telefono,
+          c."Correo" as cliente_correo,
+          c."Direccion" as cliente_direccion,
+          c."Ciudad" as cliente_ciudad,
+          c."Departamento" as cliente_departamento,
+          c."Barrio" as cliente_barrio
+        FROM "Envios" e
+        INNER JOIN "Ventas" v ON e."VentaId" = v.id
+        INNER JOIN "Clientes" c ON v."ClienteId" = c.id
+      `;
+      
+      const conditions = [];
+      const params = [];
+      let paramIndex = 1;
+
+      if (estado) {
+        conditions.push(`e."Estado" = $${paramIndex++}`);
+        params.push(estado);
+      }
+      if (ventaId) {
+        conditions.push(`e."VentaId" = $${paramIndex++}`);
+        params.push(Number(ventaId));
+      }
+      if (ciudad) {
+        conditions.push(`LOWER(e."Ciudad") LIKE LOWER($${paramIndex++})`);
+        params.push(`%${ciudad}%`);
+      }
+
+      if (conditions.length > 0) {
+        baseQuery += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      baseQuery += ` ORDER BY e.id DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+      params.push(Number(limit), offset);
+
+      const countQuery = `
+        SELECT COUNT(*) as total
+        FROM "Envios" e
+        ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+      `;
+
+      const [enviosResult, countResult] = await Promise.all([
+        db.query(baseQuery, params),
+        db.query(countQuery, params.slice(0, -2)) // Remove limit and offset for count
+      ]);
+
+      const envios = enviosResult.rows.map(row => ({
+        id: row.id,
+        VentaId: row.VentaId,
+        DireccionEntrega: row.DireccionEntrega,
+        FechaEnvio: row.FechaEnvio,
+        FechaEntrega: row.FechaEntrega,
+        OperadorLogistico: row.OperadorLogistico,
+        NumeroGuia: row.NumeroGuia,
+        Observaciones: row.Observaciones,
+        Ciudad: row.Ciudad,
+        Departamento: row.Departamento,
+        Barrio: row.Barrio,
+        Estado: row.Estado,
+        Calificacion: row.Calificacion,
+        venta: {
+          id: row.venta_id,
+          numero: row.venta_id,
+          fecha: row.venta_fecha ? new Date(row.venta_fecha).toISOString() : null,
+          total: Number(row.venta_total ?? 0),
+          estado: row.venta_estado,
+          tipoVenta: row.venta_tipo
+        },
+        cliente: {
+          id: row.cliente_id,
+          nombre: [row.cliente_nombres, row.cliente_apellidos].filter(Boolean).join(' ').trim(),
+          telefono: row.cliente_telefono ?? null,
+          correo: row.cliente_correo ?? null,
+          direccion: row.cliente_direccion ?? null,
+          ciudad: row.cliente_ciudad ?? null,
+          departamento: row.cliente_departamento ?? null,
+          barrio: row.cliente_barrio ?? null
+        }
+      }));
+
+      const total = Number(countResult.rows[0].total);
+
+      return {
+        envios,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          pages: Math.ceil(total / Number(limit))
+        }
+      };
+    });
+
+    res.json(result);
+  } catch (e) {
+    console.error('❌ Error en /api/envios:', e);
+    console.error('Stack:', e.stack);
+    res.status(500).send('Error al obtener envíos: ' + e.message);
+  }
+});
+
+// GET /api/envios/stats - Estadísticas de envíos
+app.get('/api/envios/stats', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+
+    const stats = await withTenantClient(tenant, async (db) => {
+      // Primero verificar si hay envíos
+      const countResult = await db.query(`SELECT COUNT(*) as total FROM "Envios"`);
+      const totalEnvios = Number(countResult.rows[0]?.total || 0);
+      
+      if (totalEnvios === 0) {
+        // Si no hay envíos, retornar ceros
+        return {
+          totalEnvios: 0,
+          pendientes: 0,
+          confirmados: 0,
+          enviados: 0,
+          entregados: 0,
+          cancelados: 0,
+          devueltos: 0
+        };
+      }
+      
+      // Si hay envíos, hacer el conteo por estado
+      const result = await db.query(`
+        SELECT 
+          "Estado",
+          COUNT(*) as cantidad
+        FROM "Envios"
+        GROUP BY "Estado"
+      `);
+      
+      const stats = {
+        totalEnvios: totalEnvios,
+        pendientes: 0,
+        confirmados: 0,
+        enviados: 0,
+        entregados: 0,
+        cancelados: 0,
+        devueltos: 0
+      };
+      
+      result.rows.forEach(row => {
+        const estado = String(row.Estado || '').toLowerCase();
+        const cantidad = Number(row.cantidad || 0);
+        
+        if (estado === 'pendiente') stats.pendientes = cantidad;
+        else if (estado === 'confirmada') stats.confirmados = cantidad;
+        else if (estado === 'enviada') stats.enviados = cantidad;
+        else if (estado === 'entregada') stats.entregados = cantidad;
+        else if (estado === 'cancelada') stats.cancelados = cantidad;
+        else if (estado === 'devuelta') stats.devueltos = cantidad;
+      });
+      
+      return stats;
+    });
+
+    res.json(stats);
+  } catch (e) {
+    console.error('❌ Error en /api/envios/stats:', e);
+    console.error('Stack:', e.stack);
+    res.status(500).send('Error al obtener estadísticas de envíos: ' + e.message);
+  }
+});
+
+// GET /api/ventas/sin-envio - Obtener ventas que no tienen envío creado
+app.get('/api/ventas/sin-envio', auth, async (req, res) => {
+  try {
+    console.log('🔍 GET /api/ventas/sin-envio called');
+    const { tenant } = req.user;
+    console.log('👤 Tenant:', tenant);
+    const { page = 1, limit = 50 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const result = await withTenantClient(tenant, async (db) => {
+      // Debug: Verificar schema actual
+      const schemaCheck = await db.query('SELECT current_schema()');
+      console.log('📂 Current schema:', schemaCheck.rows[0].current_schema);
+      
+      // Debug: Verificar ventas existentes
+      const ventasDebug = await db.query('SELECT id, "Estado", "TipoVenta" FROM "Ventas" ORDER BY id DESC LIMIT 5');
+      console.log('📋 Ventas en DB:', ventasDebug.rows);
+      
+      // Debug: Verificar envíos existentes
+      const enviosDebug = await db.query('SELECT id, "VentaId" FROM "Envios"');
+      console.log('📦 Envíos en DB:', enviosDebug.rows);
+
+      const ventasQuery = `
+        SELECT 
+          v.id,
+          v."Fecha" as fecha,
+          v."Total" as total,
+          v."TipoVenta",
+          v."Estado" as venta_estado,
+          c.id as cliente_id,
+          c."Nombres" || ' ' || c."Apellidos" as cliente_nombre,
+          c."Telefono" as cliente_telefono,
+          c."Correo" as cliente_correo,
+          c."Direccion" as cliente_direccion,
+          c."Ciudad" as cliente_ciudad,
+          c."Departamento" as cliente_departamento,
+          c."Barrio" as cliente_barrio,
+          c."TipoIdentificacion" as cliente_tipo_doc,
+          c."NumeroDocumento" as cliente_numero_doc
+        FROM "Ventas" v
+        INNER JOIN "Clientes" c ON v."ClienteId" = c.id
+        LEFT JOIN "Envios" e ON v.id = e."VentaId"
+        WHERE e."VentaId" IS NULL
+        AND v."Estado" NOT IN ('cancelada', 'devuelta')
+        ORDER BY v."Fecha" DESC
+        LIMIT $1 OFFSET $2
+      `;
+
+      const countQuery = `
+        SELECT COUNT(*) as total
+        FROM "Ventas" v
+        LEFT JOIN "Envios" e ON v.id = e."VentaId"
+        WHERE e."VentaId" IS NULL
+        AND v."Estado" NOT IN ('cancelada', 'devuelta')
+      `;
+
+      const [ventasResult, countResult] = await Promise.all([
+        db.query(ventasQuery, [Number(limit), offset]),
+        db.query(countQuery)
+      ]);
+
+      console.log('📊 Query results:', {
+        ventasCount: ventasResult.rows.length,
+        totalCount: countResult.rows[0]?.total || 0
+      });
+
+      const ventas = ventasResult.rows.map(row => ({
+        id: row.id,
+        fecha: row.fecha,
+        total: Number(row.total),
+        tipoVenta: row.TipoVenta,
+        estado: row.venta_estado,
+        cliente: {
+          id: row.cliente_id,
+          nombre: row.cliente_nombre,
+          telefono: row.cliente_telefono,
+          correo: row.cliente_correo,
+          direccion: row.cliente_direccion,
+          ciudad: row.cliente_ciudad,
+          departamento: row.cliente_departamento,
+          barrio: row.cliente_barrio,
+          tipoIdentificacion: row.cliente_tipo_doc,
+          numeroDocumento: row.cliente_numero_doc
+        }
+      }));
+
+      const total = Number(countResult.rows[0].total);
+
+      return {
+        ventas,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          pages: Math.ceil(total / Number(limit))
+        }
+      };
+    });
+
+    res.json(result);
+  } catch (e) {
+    console.error('❌ Error en /api/ventas/sin-envio:', e);
+    console.error('Stack:', e.stack);
+    console.error('Tenant:', req.user?.tenant);
+    res.status(500).send('Error al obtener ventas sin envío: ' + e.message);
+  }
+});
+
+// GET /api/envios/:id - Obtener un envío específico
+app.get('/api/envios/:id', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+    const { id } = req.params;
+
+    const envio = await withTenantClient(tenant, async (db) => {
+      const result = await db.query(`
+        SELECT 
+          e.*,
+          v.id as venta_id,
+          v."Fecha" as venta_fecha,
+          v."Total" as venta_total,
+          v."Estado" as venta_estado,
+          v."TipoVenta" as venta_tipo,
+          c.id as cliente_id,
+          c.nombres as cliente_nombres,
+          c.apellidos as cliente_apellidos,
+          c.telefono as cliente_telefono,
+          c.correo as cliente_correo,
+          c.direccion as cliente_direccion,
+          c.ciudad as cliente_ciudad,
+          c.departamento as cliente_departamento,
+          c.barrio as cliente_barrio
+        FROM "Envios" e
+        INNER JOIN "Ventas" v ON e."VentaId" = v.id
+        INNER JOIN "Clientes" c ON v."ClienteId" = c.id
+        WHERE e.id = $1
+      `, [Number(id)]);
+
+      if (result.rows.length === 0) {
+        return null;
+      }
+
+      const row = result.rows[0];
+      return {
+        id: row.id,
+        VentaId: row.VentaId,
+        DireccionEntrega: row.DireccionEntrega,
+        FechaEnvio: row.FechaEnvio,
+        FechaEntrega: row.FechaEntrega,
+        OperadorLogistico: row.OperadorLogistico,
+        NumeroGuia: row.NumeroGuia,
+        Observaciones: row.Observaciones,
+        Ciudad: row.Ciudad,
+        Departamento: row.Departamento,
+        Barrio: row.Barrio,
+        Estado: row.Estado,
+        Calificacion: row.Calificacion,
+        venta: {
+          id: row.venta_id,
+          numero: row.venta_id,
+          fecha: row.venta_fecha ? new Date(row.venta_fecha).toISOString() : null,
+          total: Number(row.venta_total ?? 0),
+          estado: row.venta_estado,
+          tipoVenta: row.venta_tipo
+        },
+        cliente: {
+          id: row.cliente_id,
+          nombre: [row.cliente_nombres, row.cliente_apellidos].filter(Boolean).join(' ').trim(),
+          telefono: row.cliente_telefono ?? null,
+          correo: row.cliente_correo ?? null,
+          direccion: row.cliente_direccion ?? null,
+          ciudad: row.cliente_ciudad ?? null,
+          departamento: row.cliente_departamento ?? null,
+          barrio: row.cliente_barrio ?? null
+        }
+      };
+    });
+
+    if (!envio) {
+      return res.status(404).send('Envío no encontrado');
+    }
+
+    res.json(envio);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('Error al obtener el envío');
+  }
+});
+
+// POST /api/envios - Crear un nuevo envío
+app.post('/api/envios', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+    const {
+      VentaId,
+      DireccionEntrega,
+      FechaEnvio,
+      FechaEntrega,
+      OperadorLogistico,
+      NumeroGuia,
+      Observaciones,
+      Ciudad,
+      Departamento,
+      Barrio,
+      Estado = 'pendiente',
+      Calificacion = 'Pendiente'
+    } = req.body;
+
+    if (!VentaId || !DireccionEntrega) {
+      return res.status(400).send('VentaId y DireccionEntrega son requeridos');
+    }
+
+    const envio = await withTenantClient(tenant, async (db) => {
+      // Verificar que la venta existe
+      const ventaCheck = await db.query('SELECT id FROM "Ventas" WHERE id = $1', [VentaId]);
+      if (ventaCheck.rows.length === 0) {
+        throw new Error('La venta especificada no existe');
+      }
+
+      // Verificar que no existe ya un envío para esta venta
+      const envioCheck = await db.query('SELECT id FROM "Envios" WHERE "VentaId" = $1', [VentaId]);
+      if (envioCheck.rows.length > 0) {
+        throw new Error('Ya existe un envío para esta venta');
+      }
+
+      const result = await db.query(`
+        INSERT INTO "Envios" (
+          "VentaId", "DireccionEntrega", "FechaEnvio", "FechaEntrega", 
+          "OperadorLogistico", "NumeroGuia", "Observaciones", 
+          "Ciudad", "Departamento", "Barrio", "Estado", "Calificacion"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING *
+      `, [
+        VentaId, DireccionEntrega, FechaEnvio, FechaEntrega,
+        OperadorLogistico, NumeroGuia, Observaciones,
+        Ciudad, Departamento, Barrio, Estado, Calificacion
+      ]);
+
+      return result.rows[0];
+    });
+
+    res.status(201).json(envio);
+  } catch (e) {
+    console.error(e);
+    if (e.message.includes('Ya existe un envío') || e.message.includes('no existe')) {
+      return res.status(400).send(e.message);
+    }
+    res.status(500).send('Error al crear el envío');
+  }
+});
+
+// PUT /api/envios/:id - Actualizar un envío
+app.put('/api/envios/:id', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+    const { id } = req.params;
+    const updates = req.body;
+
+    const envio = await withTenantClient(tenant, async (db) => {
+      await db.query('BEGIN');
+      
+      try {
+        // Verificar que el envío existe
+        const envioCheck = await db.query(
+          'SELECT id, "VentaId", "Estado" FROM "Envios" WHERE id = $1', 
+          [Number(id)]
+        );
+        
+        if (envioCheck.rows.length === 0) {
+          await db.query('ROLLBACK');
+          return null;
+        }
+
+        const envioActual = envioCheck.rows[0];
+        const ventaId = envioActual.VentaId;
+        const estadoAnterior = envioActual.Estado;
+
+        const updateFields = [];
+        const updateValues = [];
+        let paramIndex = 1;
+
+        const allowedFields = [
+          'DireccionEntrega', 'FechaEnvio', 'FechaEntrega', 
+          'OperadorLogistico', 'NumeroGuia', 'Observaciones', 
+          'Ciudad', 'Departamento', 'Barrio', 'Estado', 'Calificacion'
+        ];
+
+        allowedFields.forEach(field => {
+          if (updates[field] !== undefined) {
+            updateFields.push(`"${field}" = $${paramIndex++}`);
+            updateValues.push(updates[field]);
+          }
+        });
+
+        if (updateFields.length === 0) {
+          await db.query('ROLLBACK');
+          throw new Error('No hay campos para actualizar');
+        }
+
+        updateValues.push(Number(id));
+
+        const result = await db.query(`
+          UPDATE "Envios" 
+          SET ${updateFields.join(', ')}
+          WHERE id = $${paramIndex}
+          RETURNING *
+        `, updateValues);
+
+        const envioActualizado = result.rows[0];
+
+        // Sincronizar estado de venta si el estado del envío cambió
+        if (updates.Estado && updates.Estado !== estadoAnterior) {
+          console.log(`🔄 Sincronizando estado de envío ${id}: ${estadoAnterior} → ${updates.Estado}`);
+          
+          // Ahora los estados son los mismos entre Envíos y Ventas (minúsculas)
+          // Solo necesitamos validar que el estado exista
+          const estadosValidos = ['pendiente', 'confirmada', 'enviada', 'entregada', 'cancelada', 'devuelta'];
+          const nuevoEstado = updates.Estado.toLowerCase();
+          
+          if (estadosValidos.includes(nuevoEstado)) {
+            await db.query(
+              `UPDATE "Ventas" SET "Estado" = $1 WHERE id = $2`,
+              [nuevoEstado, ventaId]
+            );
+            console.log(`✅ Venta ${ventaId} actualizada a estado: ${nuevoEstado}`);
+          }
+        }
+
+        await db.query('COMMIT');
+        return envioActualizado;
+      } catch (error) {
+        await db.query('ROLLBACK');
+        throw error;
+      }
+    });
+
+    if (!envio) {
+      return res.status(404).send('Envío no encontrado');
+    }
+
+    res.json(envio);
+  } catch (e) {
+    console.error('❌ Error al actualizar envío:', e);
+    res.status(500).send('Error al actualizar el envío: ' + e.message);
+  }
+});
+
+// DELETE /api/envios/:id - Eliminar un envío
+app.delete('/api/envios/:id', auth, async (req, res) => {
+  try {
+    const { tenant } = req.user;
+    const { id } = req.params;
+
+    const deleted = await withTenantClient(tenant, async (db) => {
+      const result = await db.query('DELETE FROM "Envios" WHERE id = $1 RETURNING id', [Number(id)]);
+      return result.rows.length > 0;
+    });
+
+    if (!deleted) {
+      return res.status(404).send('Envío no encontrado');
+    }
+
+    res.json({ deleted: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('Error al eliminar el envío');
   }
 });
 

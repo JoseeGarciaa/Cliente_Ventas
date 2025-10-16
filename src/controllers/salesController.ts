@@ -18,6 +18,11 @@ import type {
   CreditosResponse,
   RegistrarPagoCreditoPayload,
   UpdateClientePayload,
+  CreateEnvioPayload,
+  UpdateEnvioPayload,
+  EnviosResponse,
+  EnviosStats,
+  VentasSinEnvioResponse,
 } from '../models/types';
 import { fetchWithAuth } from '../lib/api';
 
@@ -39,6 +44,12 @@ const DEFAULT_TIPOS_CREDITO: TipoCredito[] = ['diario', 'semanal', 'quincenal', 
 const DEFAULT_ESTADOS_CREDITO: EstadoCredito[] = ['activo', 'pagado', 'cancelado', 'mora'];
 const DEFAULT_ESTADOS_CUOTA_CREDITO: EstadoCuotaCredito[] = ['pendiente', 'pagada', 'vencida'];
 const DEFAULT_CALIFICACIONES_CREDITO: CalificacionCliente[] = ['Pendiente', 'Positivo', 'Negativo', 'Hurto'];
+
+const toIsoStringOrNull = (value: unknown): string | null => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
 
 export const salesController = {
   getDashboardStats: () => {
@@ -218,8 +229,94 @@ export const salesController = {
     return [];
   },
 
-  getEnvios: (): Envio[] => {
-    return [];
+  getEnvios: async (): Promise<EnviosResponse> => {
+    const data = await fetchWithAuth<EnviosResponse>('/api/envios');
+    return {
+      envios: (data.envios || []).map((envio) => ({
+        ...envio,
+        id: Number(envio.id),
+        VentaId: Number(envio.VentaId),
+        FechaEnvio: toIsoStringOrNull(envio.FechaEnvio),
+        FechaEntrega: toIsoStringOrNull(envio.FechaEntrega),
+        OperadorLogistico: envio.OperadorLogistico ?? null,
+        NumeroGuia: envio.NumeroGuia ?? null,
+        Observaciones: envio.Observaciones ?? null,
+        Ciudad: envio.Ciudad ?? null,
+        Departamento: envio.Departamento ?? null,
+        Barrio: envio.Barrio ?? null,
+        venta: envio.venta
+          ? {
+              ...envio.venta,
+              id: Number(envio.venta.id ?? envio.VentaId),
+              numero: Number(envio.venta.numero ?? envio.VentaId),
+              fecha: toIsoStringOrNull(envio.venta.fecha),
+              total: Number(envio.venta.total ?? 0),
+            }
+          : undefined,
+        cliente: envio.cliente
+          ? {
+              ...envio.cliente,
+              id: Number(envio.cliente.id ?? 0),
+              telefono: envio.cliente.telefono ?? null,
+              correo: envio.cliente.correo ?? null,
+              direccion: envio.cliente.direccion ?? null,
+              ciudad: envio.cliente.ciudad ?? null,
+              departamento: envio.cliente.departamento ?? null,
+              barrio: envio.cliente.barrio ?? null,
+            }
+          : undefined,
+      })),
+      pagination: data.pagination || { page: 1, limit: 50, total: 0, pages: 0 }
+    };
+  },
+
+  getEnviosStats: async (): Promise<EnviosStats> => {
+    const data = await fetchWithAuth<EnviosStats>('/api/envios/stats');
+    return {
+      totalEnvios: Number(data.totalEnvios ?? 0),
+      pendientes: Number(data.pendientes ?? 0),
+      confirmados: Number(data.confirmados ?? 0),
+      enviados: Number(data.enviados ?? 0),
+      entregados: Number(data.entregados ?? 0),
+      cancelados: Number(data.cancelados ?? 0),
+      devueltos: Number(data.devueltos ?? 0)
+    };
+  },
+
+  createEnvio: async (payload: CreateEnvioPayload): Promise<Envio> => {
+    const data = await fetchWithAuth<Envio>('/api/envios', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload)
+    });
+    return data;
+  },
+
+  updateEnvio: async (id: number, payload: UpdateEnvioPayload): Promise<Envio> => {
+    const data = await fetchWithAuth<Envio>(`/api/envios/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload)
+    });
+    return data;
+  },
+
+  deleteEnvio: async (id: number): Promise<void> => {
+    await fetchWithAuth(`/api/envios/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  getVentasSinEnvio: async (): Promise<VentasSinEnvioResponse> => {
+    const data = await fetchWithAuth<VentasSinEnvioResponse>('/api/ventas/sin-envio');
+    return {
+      ventas: data.ventas || [],
+      pagination: data.pagination || { page: 1, limit: 50, total: 0, pages: 0 }
+    };
   },
 
   getCreditos: async (): Promise<CreditosResponse> => {
