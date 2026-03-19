@@ -7,6 +7,9 @@ import type {
   Credito,
   Pago,
   Usuario,
+  UsuariosMetadata,
+  CreateUsuarioPayload,
+  UpdateUsuarioPayload,
   CreateClientePayload,
   CreateVentaContadoPayload,
   UpdateVentaPayload,
@@ -23,8 +26,10 @@ import type {
   EnviosResponse,
   EnviosStats,
   VentasSinEnvioResponse,
+  DashboardStats,
 } from '../models/types';
 import { fetchWithAuth } from '../lib/api';
+import { inventoryController } from './inventoryController';
 
 const DEFAULT_TIPOS_VENTA = ['contado', 'credito'];
 const DEFAULT_MEDIOS_PAGO = [
@@ -52,15 +57,76 @@ const toIsoStringOrNull = (value: unknown): string | null => {
 };
 
 export const salesController = {
-  getDashboardStats: () => {
+  getDashboardStats: async (): Promise<DashboardStats> => {
+    const [ventas, clientes, creditosResponse, productos, enviosResponse] = await Promise.all([
+      salesController.getVentas(),
+      salesController.getClientes(),
+      salesController.getCreditos(),
+      inventoryController.getProductos(),
+      salesController.getEnvios({ limit: 1000 }),
+    ]);
+
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    const ventasMes = ventas.filter((venta) => {
+      if (!venta.fecha) return false;
+      const fechaVenta = new Date(venta.fecha);
+      if (Number.isNaN(fechaVenta.getTime())) return false;
+      return fechaVenta.getMonth() === currentMonth && fechaVenta.getFullYear() === currentYear;
+    }).length;
+
+    const ventasContadoEntregadasConEnvio = new Set<number>();
+    const ingresosContadoEntregadoDesdeEnvios = (enviosResponse.envios || []).reduce((acc, envio) => {
+      const estadoEnvio = String(envio.Estado || '').trim().toLowerCase();
+      const tipoVenta = String(envio.venta?.tipoVenta || '').trim().toLowerCase();
+      if (estadoEnvio !== 'entregada' || tipoVenta !== 'contado') return acc;
+
+      const ventaId = Number(envio.VentaId);
+      if (Number.isFinite(ventaId) && ventaId > 0) {
+        ventasContadoEntregadasConEnvio.add(ventaId);
+      }
+
+      return acc + Number(envio.venta?.total ?? 0);
+    }, 0);
+
+    const ingresosContadoEntregadoSinEnvio = ventas.reduce((acc, venta) => {
+      const tipoVenta = String(venta.tipoVenta || '').trim().toLowerCase();
+      const estadoVenta = String(venta.estado || '').trim().toLowerCase();
+      if (tipoVenta !== 'contado' || estadoVenta !== 'entregada') return acc;
+
+      const ventaId = Number(venta.id);
+      if (ventasContadoEntregadasConEnvio.has(ventaId)) return acc;
+
+      return acc + Number(venta.total ?? 0);
+    }, 0);
+
+    const ingresosContadoEntregado = ingresosContadoEntregadoDesdeEnvios + ingresosContadoEntregadoSinEnvio;
+
+    // Para créditos solo se considera dinero efectivamente recibido (cuotas pagadas).
+    const ingresosCreditosPagados = Number(creditosResponse.stats.montoCobrado ?? 0);
+    const totalIngresos = ingresosContadoEntregado + ingresosCreditosPagados;
+
+    const perdidasDevoluciones = ventas.reduce((acc, venta) => {
+      if (venta.estado !== 'devuelta') return acc;
+      return acc + Number(venta.total ?? 0);
+    }, 0);
+
+    const costoInventario = productos.reduce((acc, producto) => {
+      const cantidad = Number(producto.cantidad ?? 0);
+      const precioCosto = Number(producto.precioCosto ?? 0);
+      return acc + cantidad * precioCosto;
+    }, 0);
+
     return {
-      ventasMes: 0,
-      totalIngresos: 1800000,
-      totalClientes: 0,
-      creditosVencidos: 0,
-      perdidasDevoluciones: 0,
-      costoInventario: 10000000,
-      totalVentas: 1,
+      ventasMes,
+      totalIngresos,
+      totalClientes: clientes.length,
+      creditosVencidos: Number(creditosResponse.stats.creditosVencidos ?? 0),
+      perdidasDevoluciones,
+      costoInventario,
+      totalVentas: ventas.length,
     };
   },
 
@@ -166,6 +232,8 @@ export const salesController = {
         cantidad: Number(detalle.cantidad ?? 0),
         precioUnitario: Number(detalle.precioUnitario ?? 0),
         subtotal: Number(detalle.subtotal ?? 0),
+        color: detalle.color ?? null,
+        talla: detalle.talla ?? null,
       })),
     }));
   },
@@ -192,6 +260,8 @@ export const salesController = {
         cantidad: Number(detalle.cantidad ?? 0),
         precioUnitario: Number(detalle.precioUnitario ?? 0),
         subtotal: Number(detalle.subtotal ?? 0),
+        color: detalle.color ?? null,
+        talla: detalle.talla ?? null,
       })),
     };
   },
@@ -215,6 +285,8 @@ export const salesController = {
         cantidad: Number(detalle.cantidad ?? 0),
         precioUnitario: Number(detalle.precioUnitario ?? 0),
         subtotal: Number(detalle.subtotal ?? 0),
+        color: detalle.color ?? null,
+        talla: detalle.talla ?? null,
       })),
     };
   },
@@ -229,8 +301,17 @@ export const salesController = {
     return [];
   },
 
-  getEnvios: async (): Promise<EnviosResponse> => {
-    const data = await fetchWithAuth<EnviosResponse>('/api/envios');
+  getEnvios: async (params?: { page?: number; limit?: number }): Promise<EnviosResponse> => {
+    const queryParams = new URLSearchParams();
+    if (params?.page && Number.isFinite(params.page) && params.page > 0) {
+      queryParams.set('page', String(params.page));
+    }
+    if (params?.limit && Number.isFinite(params.limit) && params.limit > 0) {
+      queryParams.set('limit', String(params.limit));
+    }
+
+    const endpoint = queryParams.toString() ? `/api/envios?${queryParams.toString()}` : '/api/envios';
+    const data = await fetchWithAuth<EnviosResponse>(endpoint);
     return {
       envios: (data.envios || []).map((envio) => ({
         ...envio,
@@ -249,6 +330,10 @@ export const salesController = {
               ...envio.venta,
               id: Number(envio.venta.id ?? envio.VentaId),
               numero: Number(envio.venta.numero ?? envio.VentaId),
+              usuarioId:
+                envio.venta.usuarioId !== null && envio.venta.usuarioId !== undefined
+                  ? Number(envio.venta.usuarioId)
+                  : undefined,
               fecha: toIsoStringOrNull(envio.venta.fecha),
               total: Number(envio.venta.total ?? 0),
             }
@@ -393,7 +478,62 @@ export const salesController = {
     return [];
   },
 
-  getUsuarios: (): Usuario[] => {
-    return [];
+  getUsuarios: async (): Promise<Usuario[]> => {
+    const data = await fetchWithAuth<Usuario[]>('/api/usuarios');
+    return (data || []).map((usuario) => ({
+      ...usuario,
+      id: Number(usuario.id),
+      telefono: usuario.telefono ?? null,
+      fechaCreacion: usuario.fechaCreacion,
+      estado: usuario.estado ?? 'activo',
+    }));
+  },
+
+  getUsuariosMetadata: async (): Promise<UsuariosMetadata> => {
+    const data = await fetchWithAuth<UsuariosMetadata>('/api/usuarios/metadata');
+    return {
+      roles: (data.roles || []).map((role) => String(role).trim()).filter(Boolean),
+      estados: (data.estados || []).map((estado) => String(estado).trim()).filter(Boolean),
+    };
+  },
+
+  createUsuario: async (payload: CreateUsuarioPayload): Promise<Usuario> => {
+    const data = await fetchWithAuth<Usuario>('/api/usuarios', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      ...data,
+      id: Number(data.id),
+      telefono: data.telefono ?? null,
+      estado: data.estado ?? 'activo',
+    };
+  },
+
+  updateUsuario: async (id: number, payload: UpdateUsuarioPayload): Promise<Usuario> => {
+    const data = await fetchWithAuth<Usuario>(`/api/usuarios/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      ...data,
+      id: Number(data.id),
+      telefono: data.telefono ?? null,
+      estado: data.estado ?? 'activo',
+    };
+  },
+
+  deleteUsuario: async (id: number): Promise<{ deleted: boolean }> => {
+    return fetchWithAuth<{ deleted: boolean }>(`/api/usuarios/${id}`, {
+      method: 'DELETE',
+    });
   },
 };

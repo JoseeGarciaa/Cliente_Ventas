@@ -3,9 +3,16 @@ import { useState, useEffect } from 'react';
 import { salesController } from '../controllers/salesController';
 import CreateEnvioModal from '../components/CreateEnvioModal';
 import EditEnvioModal from '../components/EditEnvioModal';
+import { emitVentasEnviosSync, subscribeVentasEnviosSync } from '../lib/syncEvents';
 import type { Envio, EnviosStats, VentaSinEnvio } from '../models/types';
 
-export default function Envios() {
+interface EnviosProps {
+  user?: any;
+}
+
+export default function Envios({ user }: EnviosProps) {
+  const isVendedor = String(user?.rol || '').toLowerCase() === 'vendedor';
+  const currentUserId = Number(user?.id);
   const [envios, setEnvios] = useState<Envio[]>([]);
   const [stats, setStats] = useState<EnviosStats>({
     totalEnvios: 0,
@@ -32,6 +39,17 @@ export default function Envios() {
     loadEnvios();
     loadStats();
     loadVentasSinEnvio();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeVentasEnviosSync((source) => {
+      if (source === 'envios') return;
+      loadEnvios();
+      loadStats();
+      loadVentasSinEnvio();
+    });
+
+    return unsubscribe;
   }, []);
 
   const loadEnvios = async () => {
@@ -83,15 +101,21 @@ export default function Envios() {
     loadEnvios();
     loadStats();
     loadVentasSinEnvio();
+    emitVentasEnviosSync('envios');
   };
 
   const handleEnvioUpdated = () => {
     loadEnvios();
     loadStats();
     loadVentasSinEnvio();
+    emitVentasEnviosSync('envios');
   };
 
   const filteredEnvios = envios.filter(envio => {
+    const matchesOwnership =
+      !isVendedor ||
+      (Number.isInteger(currentUserId) && Number(envio.venta?.usuarioId ?? 0) === currentUserId);
+
     const lowerSearch = searchTerm.trim().toLowerCase();
     const matchesSearch =
       lowerSearch.length === 0 ||
@@ -108,7 +132,7 @@ export default function Envios() {
 
     const matchesStatus = statusFilter === 'todos' || envio.Estado === statusFilter;
 
-    return matchesSearch && matchesStatus;
+    return matchesOwnership && matchesSearch && matchesStatus;
   });
 
   const getStatusBadge = (estado: string) => {
@@ -166,12 +190,12 @@ export default function Envios() {
       </div>
 
       {/* Tabs */}
-      <div className="bg-white rounded-lg shadow-sm">
+      <div className="bg-white rounded-lg shadow-sm min-w-0">
         <div className="border-b border-gray-200">
-          <nav className="flex space-x-8 px-6" aria-label="Tabs">
+          <nav className="flex space-x-6 px-4 sm:px-6 overflow-x-auto" aria-label="Tabs">
             <button
               onClick={() => setActiveTab('envios')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
                 activeTab === 'envios'
                   ? 'border-blue-500 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -187,7 +211,7 @@ export default function Envios() {
             </button>
             <button
               onClick={() => setActiveTab('crear')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
                 activeTab === 'crear'
                   ? 'border-blue-500 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -222,6 +246,7 @@ export default function Envios() {
                 />
               </div>
               <select 
+                title="Filtrar envíos por estado"
                 className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
@@ -277,14 +302,15 @@ export default function Envios() {
       </div>
 
       {/* Shipments Table */}
-      <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+      <div className="bg-white rounded-lg shadow-sm overflow-hidden min-w-0">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
             <span className="ml-2 text-gray-600">Cargando envíos...</span>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
@@ -323,7 +349,7 @@ export default function Envios() {
               <tbody className="divide-y divide-gray-200">
                 {filteredEnvios.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-6 py-12 text-center">
+                    <td colSpan={10} className="px-6 py-12 text-center">
                       <div className="flex flex-col items-center justify-center space-y-3">
                         <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center">
                           <Truck className="w-8 h-8 text-gray-400" />
@@ -431,6 +457,42 @@ export default function Envios() {
               </tbody>
             </table>
           </div>
+          <div className="md:hidden divide-y divide-gray-100">
+            {filteredEnvios.length === 0 ? (
+              <div className="px-6 py-10 text-center text-gray-500">No se encontraron envíos</div>
+            ) : (
+              filteredEnvios.map((envio) => (
+                <div key={envio.id} className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-sm font-semibold text-gray-900">#ENV-{envio.id.toString().padStart(6, '0')}</p>
+                      <p className="text-xs text-gray-500">Venta #{envio.VentaId}</p>
+                    </div>
+                    <span className={`inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-medium ${getStatusBadge(envio.Estado)}`}>
+                      {getStatusIcon(envio.Estado)}
+                      <span className="capitalize">{envio.Estado.replace('_', ' ')}</span>
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-700 space-y-1">
+                    <p><span className="font-medium">Cliente:</span> {envio.cliente?.nombre || 'Cliente desconocido'}</p>
+                    <p><span className="font-medium">Dirección:</span> {envio.DireccionEntrega}</p>
+                    <p><span className="font-medium">Ciudad:</span> {envio.Ciudad || '-'}</p>
+                    <p><span className="font-medium">Operador:</span> {envio.OperadorLogistico || '-'}</p>
+                    <p><span className="font-medium">Guía:</span> {envio.NumeroGuia || '-'}</p>
+                  </div>
+                  <button
+                    onClick={() => handleEditEnvio(envio)}
+                    className="inline-flex items-center px-3 py-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors"
+                    title="Editar envío"
+                  >
+                    <Edit className="w-4 h-4 mr-1" />
+                    Editar
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+          </>
         )}
       </div>
 
@@ -473,7 +535,8 @@ export default function Envios() {
                 </p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
@@ -567,6 +630,37 @@ export default function Envios() {
                   </tbody>
                 </table>
               </div>
+              <div className="md:hidden divide-y divide-gray-100">
+                {ventasSinEnvio.map((venta) => (
+                  <div key={venta.id} className="p-4 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-mono text-sm font-semibold text-gray-900">#{venta.id}</p>
+                        <p className="text-sm font-medium text-gray-900">{venta.cliente.nombre}</p>
+                        <p className="text-xs text-gray-500">{venta.cliente.tipoIdentificacion} {venta.cliente.numeroDocumento}</p>
+                      </div>
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                        venta.tipoVenta === 'contado'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}>
+                        {venta.tipoVenta === 'contado' ? 'Contado' : 'Crédito'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600">Fecha: {new Date(venta.fecha).toLocaleDateString()}</p>
+                    <p className="text-sm text-gray-600">Total: ${venta.total.toLocaleString()}</p>
+                    <p className="text-sm text-gray-600">Dirección: {venta.cliente.direccion || 'Sin dirección'}</p>
+                    <button
+                      onClick={() => handleCreateEnvio(venta)}
+                      className="inline-flex items-center space-x-1 px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Crear Envío</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+              </>
             )}
           </div>
         </div>

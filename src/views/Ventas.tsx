@@ -11,11 +11,13 @@ import {
   Loader2,
   Trash2,
   ShoppingCart,
+  Printer,
   Truck,
   Undo2,
 } from 'lucide-react';
 import { salesController } from '../controllers/salesController';
 import { inventoryController } from '../controllers/inventoryController';
+import { emitVentasEnviosSync, subscribeVentasEnviosSync } from '../lib/syncEvents';
 import type {
   CalificacionCliente,
   Cliente,
@@ -36,6 +38,8 @@ const createItemId = () => {
 type VentaItemForm = {
   id: string;
   productoId: string;
+  color: string;
+  talla: string;
   cantidad: string;
   precioUnitario: string;
   imei: string;
@@ -44,6 +48,8 @@ type VentaItemForm = {
 const initialVentaItem = (): VentaItemForm => ({
   id: createItemId(),
   productoId: '',
+  color: '',
+  talla: '',
   cantidad: '1',
   precioUnitario: '',
   imei: '',
@@ -56,6 +62,32 @@ const currencyFormatter = new Intl.NumberFormat('es-CO', {
 });
 
 const formatCurrency = (value: number) => currencyFormatter.format(value || 0);
+
+const escapeHtml = (value: string | number | null | undefined) => {
+  const text = value == null ? '' : String(value);
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+};
+
+const formatDateTimePrint = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'No disponible';
+  return date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+};
+
+const openPrintWindow = (content: string) => {
+  const printWindow = window.open('', '_blank', 'width=1024,height=900');
+  if (!printWindow) {
+    window.alert('No se pudo abrir la ventana de impresión. Revisa el bloqueador de ventanas emergentes.');
+    return;
+  }
+  printWindow.document.write(content);
+  printWindow.document.close();
+};
 
 const formatDateTimeLocal = (date: Date) => {
   const tzOffset = date.getTimezoneOffset() * 60000;
@@ -75,6 +107,27 @@ const formatEnumLabel = (value: string) =>
 
 const CALIFICACIONES: CalificacionCliente[] = ['Pendiente', 'Positivo', 'Negativo', 'Hurto'];
 
+const DEFAULT_VENTAS_METADATA: VentasMetadata = {
+  tiposVenta: ['contado', 'credito'],
+  mediosPago: [
+    'efectivo',
+    'transferencia',
+    'tarjeta_credito',
+    'tarjeta_debito',
+    'consignacion',
+    'bancolombia',
+    'nequi',
+    'daviplata',
+    'codigo_qr',
+    'contraentrega',
+  ],
+  estados: ['pendiente', 'confirmada', 'enviada', 'entregada', 'cancelada', 'devuelta'],
+  tiposCredito: ['diario', 'semanal', 'quincenal', 'mensual'],
+  estadosCredito: ['activo', 'pagado', 'cancelado', 'mora'],
+  estadosCuotaCredito: ['pendiente', 'pagada', 'vencida'],
+  calificacionesCredito: ['Pendiente', 'Positivo', 'Negativo', 'Hurto'],
+};
+
 const resolveUnitPrice = (producto: Producto | undefined, tipoVenta: string): string => {
   if (!producto) return '';
   const tipo = tipoVenta?.toLowerCase();
@@ -84,6 +137,38 @@ const resolveUnitPrice = (producto: Producto | undefined, tipoVenta: string): st
   }
   const precio = producto.precioCosto ?? producto.precioVentaContado ?? producto.precioCredito ?? 0;
   return precio ? String(precio) : '';
+};
+
+type StockOption = {
+  nombre: string;
+  cantidad: number;
+};
+
+const getProductoColoresDisponibles = (producto: Producto | undefined): StockOption[] =>
+  (producto?.colores ?? [])
+    .filter((item) => Number(item.cantidad ?? 0) > 0)
+    .map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad ?? 0) }));
+
+const getProductoTallasDisponibles = (producto: Producto | undefined): StockOption[] =>
+  (producto?.tallas ?? [])
+    .filter((item) => Number(item.cantidad ?? 0) > 0)
+    .map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad ?? 0) }));
+
+const toIntegerOrZero = (value: string): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(Math.trunc(parsed), 0);
+};
+
+const calculateCreditoCuotaInicial = (items: VentaItemForm[], productos: Producto[]): number => {
+  return items.reduce((acc, item) => {
+    if (!item.productoId) return acc;
+    const producto = productos.find((p) => String(p.id) === item.productoId);
+    if (!producto) return acc;
+    const cuotaProducto = Math.max(Number(producto.cuotaInicial ?? 0), 0);
+    const cantidad = Math.max(Number(item.cantidad || 0), 0);
+    return acc + cuotaProducto * cantidad;
+  }, 0);
 };
 
 const STATUS_STYLES: Record<string, string> = {
@@ -113,28 +198,15 @@ const statusIcon = (estado: string) => {
   }
 };
 
-export default function Ventas() {
+interface VentasProps {
+  user?: any;
+}
+
+export default function Ventas({ user }: VentasProps) {
+  const isVendedor = String(user?.rol || '').toLowerCase() === 'vendedor';
+  const currentUserId = Number(user?.id);
   const [ventas, setVentas] = useState<Venta[]>([]);
-  const [metadata, setMetadata] = useState<VentasMetadata>({
-    tiposVenta: ['contado', 'credito'],
-    mediosPago: [
-      'efectivo',
-      'transferencia',
-      'tarjeta_credito',
-      'tarjeta_debito',
-      'consignacion',
-      'bancolombia',
-      'nequi',
-      'daviplata',
-      'codigo_qr',
-      'contraentrega',
-    ],
-    estados: ['pendiente', 'confirmada', 'enviada', 'entregada', 'cancelada', 'devuelta'],
-    tiposCredito: ['diario', 'semanal', 'quincenal', 'mensual'],
-    estadosCredito: ['activo', 'pagado', 'cancelado', 'mora'],
-    estadosCuotaCredito: ['pendiente', 'pagada', 'vencida'],
-    calificacionesCredito: ['Pendiente', 'Positivo', 'Negativo', 'Hurto'],
-  });
+  const [metadata, setMetadata] = useState<VentasMetadata>(DEFAULT_VENTAS_METADATA);
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,6 +239,11 @@ export default function Ventas() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitLoading, setSubmitLoading] = useState(false);
 
+  const selectedCliente = useMemo(() => {
+    if (!selectedVenta) return null;
+    return clientes.find((cliente) => cliente.id === selectedVenta.clienteId) ?? null;
+  }, [clientes, selectedVenta]);
+
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -174,7 +251,7 @@ export default function Ventas() {
         setLoading(true);
         const [ventasData, metadataData, clientesData, productosData] = await Promise.all([
           salesController.getVentas().catch(() => []),
-          salesController.getVentasMetadata().catch(() => metadata),
+          salesController.getVentasMetadata().catch(() => DEFAULT_VENTAS_METADATA),
           salesController.getClientes().catch(() => []),
           inventoryController.getProductos().catch(() => []),
         ]);
@@ -184,18 +261,16 @@ export default function Ventas() {
         setMetadata(metadataData);
         setClientes(clientesData);
         setProductos(productosData);
-        if (!formMedioPago && metadataData.mediosPago.length > 0) {
-          setFormMedioPago(metadataData.mediosPago[0]);
+        if (metadataData.mediosPago.length > 0) {
+          setFormMedioPago((prev) => prev || metadataData.mediosPago[0]);
         }
-        if (!formTipoVenta && metadataData.tiposVenta.length > 0) {
-          setFormTipoVenta(metadataData.tiposVenta[0]);
+        if (metadataData.tiposVenta.length > 0) {
+          setFormTipoVenta((prev) => prev || metadataData.tiposVenta[0]);
         }
-        if (!formTipoCredito && metadataData.tiposCredito.length > 0) {
-          setFormTipoCredito(metadataData.tiposCredito[0]);
+        if (metadataData.tiposCredito.length > 0) {
+          setFormTipoCredito((prev) => prev || metadataData.tiposCredito[0]);
         }
-        if (!formFechaPrimerPago) {
-          setFormFechaPrimerPago(formatDateInput(new Date()));
-        }
+        setFormFechaPrimerPago((prev) => prev || formatDateInput(new Date()));
         setError(null);
       } catch (e) {
         console.error(e);
@@ -210,6 +285,15 @@ export default function Ventas() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeVentasEnviosSync((source) => {
+      if (source === 'ventas') return;
+      handleReload();
+    });
+
+    return unsubscribe;
   }, []);
 
   const handleReload = async () => {
@@ -229,6 +313,8 @@ export default function Ventas() {
   const filteredVentas = useMemo(() => {
     const term = search.trim().toLowerCase();
     return ventas.filter((venta) => {
+      const matchesOwnership =
+        !isVendedor || (Number.isInteger(currentUserId) && Number(venta.usuarioId) === currentUserId);
       const matchesSearch = term
         ? [
             venta.clienteNombre,
@@ -242,9 +328,9 @@ export default function Ventas() {
             .includes(term)
         : true;
       const matchesEstado = estadoFiltro ? venta.estado === estadoFiltro : true;
-      return matchesSearch && matchesEstado;
+      return matchesOwnership && matchesSearch && matchesEstado;
     });
-  }, [ventas, search, estadoFiltro]);
+  }, [ventas, search, estadoFiltro, isVendedor, currentUserId]);
 
   const stats = useMemo(() => {
     const totalVentas = ventas.length;
@@ -311,17 +397,126 @@ export default function Ventas() {
   };
 
   const handleItemChange = (id: string, field: keyof VentaItemForm, value: string) => {
-    setFormItems((prev) =>
-      prev.map((item) => {
+    setFormItems((prev) => {
+      const getMaxAvailableForItem = (target: VentaItemForm, items: VentaItemForm[]): number | null => {
+        if (!target.productoId) return null;
+
+        const producto = productos.find((p) => String(p.id) === target.productoId);
+        if (!producto) return null;
+
+        const limits: number[] = [];
+        if (typeof producto.cantidad === 'number') {
+          limits.push(Math.max(Number(producto.cantidad), 0));
+        }
+
+        if (target.color) {
+          const stockColor = producto.colores.find((entry) => entry.nombre === target.color)?.cantidad;
+          if (typeof stockColor === 'number') {
+            limits.push(Math.max(Number(stockColor), 0));
+          }
+        }
+
+        if (target.talla) {
+          const stockTalla = producto.tallas.find((entry) => entry.nombre === target.talla)?.cantidad;
+          if (typeof stockTalla === 'number') {
+            limits.push(Math.max(Number(stockTalla), 0));
+          }
+        }
+
+        if (limits.length === 0) return null;
+
+        const baseLimit = Math.min(...limits);
+        const usesGlobalProductStock = typeof producto.cantidad === 'number';
+
+        const reservedByOthers = items
+          .filter((candidate) => candidate.id !== target.id)
+          .filter((candidate) => {
+            if (candidate.productoId !== target.productoId) return false;
+            if (usesGlobalProductStock) return true;
+
+            const colorMatch = target.color ? candidate.color === target.color : true;
+            const tallaMatch = target.talla ? candidate.talla === target.talla : true;
+            return colorMatch && tallaMatch;
+          })
+          .reduce((acc, candidate) => acc + toIntegerOrZero(candidate.cantidad), 0);
+
+        return Math.max(baseLimit - reservedByOthers, 0);
+      };
+
+      const next = prev.map((item) => {
         if (item.id !== id) return item;
+
         const updated: VentaItemForm = { ...item, [field]: value } as VentaItemForm;
+
         if (field === 'productoId') {
           const producto = productos.find((p) => String(p.id) === value);
           updated.precioUnitario = resolveUnitPrice(producto, formTipoVenta || metadata.tiposVenta[0] || 'contado');
+          const colores = getProductoColoresDisponibles(producto);
+          const tallas = getProductoTallasDisponibles(producto);
+          updated.color = colores[0]?.nombre ?? '';
+          updated.talla = tallas[0]?.nombre ?? '';
         }
+
         return updated;
+      });
+
+      return next.map((item) => {
+        const maxAvailable = getMaxAvailableForItem(item, next);
+        if (maxAvailable === null) return item;
+
+        const current = toIntegerOrZero(item.cantidad);
+        if (maxAvailable === 0) {
+          return { ...item, cantidad: '0' };
+        }
+        const clamped = Math.max(1, Math.min(current || 1, maxAvailable));
+        return { ...item, cantidad: String(clamped) };
+      });
+    });
+  };
+
+  const getMaxAvailableForItem = (target: VentaItemForm, items: VentaItemForm[]): number | null => {
+    if (!target.productoId) return null;
+
+    const producto = productos.find((p) => String(p.id) === target.productoId);
+    if (!producto) return null;
+
+    const limits: number[] = [];
+    if (typeof producto.cantidad === 'number') {
+      limits.push(Math.max(Number(producto.cantidad), 0));
+    }
+
+    if (target.color) {
+      const stockColor = producto.colores.find((entry) => entry.nombre === target.color)?.cantidad;
+      if (typeof stockColor === 'number') {
+        limits.push(Math.max(Number(stockColor), 0));
+      }
+    }
+
+    if (target.talla) {
+      const stockTalla = producto.tallas.find((entry) => entry.nombre === target.talla)?.cantidad;
+      if (typeof stockTalla === 'number') {
+        limits.push(Math.max(Number(stockTalla), 0));
+      }
+    }
+
+    if (limits.length === 0) return null;
+
+    const baseLimit = Math.min(...limits);
+    const usesGlobalProductStock = typeof producto.cantidad === 'number';
+
+    const reservedByOthers = items
+      .filter((candidate) => candidate.id !== target.id)
+      .filter((candidate) => {
+        if (candidate.productoId !== target.productoId) return false;
+        if (usesGlobalProductStock) return true;
+
+        const colorMatch = target.color ? candidate.color === target.color : true;
+        const tallaMatch = target.talla ? candidate.talla === target.talla : true;
+        return colorMatch && tallaMatch;
       })
-    );
+      .reduce((acc, candidate) => acc + toIntegerOrZero(candidate.cantidad), 0);
+
+    return Math.max(baseLimit - reservedByOthers, 0);
   };
 
   useEffect(() => {
@@ -350,6 +545,12 @@ export default function Ventas() {
       }
     }
   }, [formTipoVenta, formTipoCredito, metadata.tiposCredito, formNumeroCuotas, formFechaPrimerPago]);
+
+  useEffect(() => {
+    if (formTipoVenta !== 'credito') return;
+    const cuotaInicialCalculada = calculateCreditoCuotaInicial(formItems, productos);
+    setFormCuotaInicial(String(cuotaInicialCalculada));
+  }, [formTipoVenta, formItems, productos]);
 
   const handleAddItem = () => {
     setFormItems((prev) => [...prev, initialVentaItem()]);
@@ -392,6 +593,8 @@ export default function Ventas() {
         productoId: Number(item.productoId),
         cantidad: Number(item.cantidad),
         precioUnitario: Number(item.precioUnitario),
+        color: item.color?.trim() || undefined,
+        talla: item.talla?.trim() || undefined,
         imei: item.imei?.trim() || undefined,
       }))
       .filter((item) => item.productoId && item.cantidad > 0 && item.precioUnitario > 0);
@@ -399,6 +602,31 @@ export default function Ventas() {
     if (detallePayload.length === 0) {
       setFormError('Agrega al menos un producto válido');
       return;
+    }
+
+    for (const item of formItems) {
+      if (!item.productoId) continue;
+      const cantidad = toIntegerOrZero(item.cantidad);
+      const maxAvailable = getMaxAvailableForItem(item, formItems);
+      if (maxAvailable !== null && maxAvailable <= 0) {
+        setFormError('Uno de los productos seleccionados no tiene inventario disponible.');
+        return;
+      }
+      if (maxAvailable !== null && cantidad > maxAvailable) {
+        setFormError('La cantidad de un producto supera el inventario disponible. Ajusta el detalle e intenta de nuevo.');
+        return;
+      }
+    }
+
+    for (const item of detallePayload) {
+      if (!item.color) {
+        setFormError('Debes seleccionar un color para cada producto.');
+        return;
+      }
+      if (!item.talla) {
+        setFormError('Debes seleccionar una talla para cada producto.');
+        return;
+      }
     }
 
   let creditoPayload: CreateCreditoPayload | undefined;
@@ -458,6 +686,7 @@ export default function Ventas() {
 
       const venta = await salesController.createVentaContado(payload);
       setVentas((prev) => [venta, ...prev]);
+      emitVentasEnviosSync('ventas');
       resetForm();
       setShowCreateModal(false);
     } catch (e) {
@@ -501,6 +730,7 @@ export default function Ventas() {
 
       const ventaActualizada = await salesController.updateVenta(selectedVenta.id, payload);
       setVentas((prev) => prev.map((venta) => (venta.id === ventaActualizada.id ? ventaActualizada : venta)));
+      emitVentasEnviosSync('ventas');
       closeDetailModal();
     } catch (e) {
       console.error(e);
@@ -526,12 +756,220 @@ export default function Ventas() {
     try {
       await salesController.deleteVenta(selectedVenta.id);
       setVentas((prev) => prev.filter((venta) => venta.id !== selectedVenta.id));
+      emitVentasEnviosSync('ventas');
       closeDetailModal();
     } catch (e) {
       console.error(e);
       setDeleteError(e instanceof Error ? e.message : 'No se pudo eliminar la venta');
       setDeleteLoading(false);
     }
+  };
+
+  const handlePrintVenta = () => {
+    if (!selectedVenta) return;
+
+    const subtotalBruto = selectedVenta.detalles.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
+    const descuento = Number(selectedVenta.descuento || 0);
+    const totalNeto = Number(selectedVenta.total || 0);
+
+    const clienteNombre = escapeHtml(selectedVenta.clienteNombre || 'No disponible');
+    const clienteDocumento = selectedCliente
+      ? `${escapeHtml(selectedCliente.tipoIdentificacion)} ${escapeHtml(selectedCliente.numeroDocumento)}`
+      : 'No disponible';
+    const clienteTelefono = escapeHtml(selectedCliente?.telefono || 'No registrado');
+    const clienteCorreo = escapeHtml(selectedCliente?.correo || 'No registrado');
+    const clienteDireccion = escapeHtml(selectedCliente?.direccion || 'No registrada');
+    const clienteCiudad = escapeHtml(selectedCliente?.ciudad || 'No registrada');
+    const clienteDepartamento = escapeHtml(selectedCliente?.departamento || 'No registrado');
+    const clienteBarrio = escapeHtml(selectedCliente?.barrio || 'No registrado');
+
+    const detalleRows = selectedVenta.detalles.map((detalle) => {
+      const producto = escapeHtml(detalle.productoNombre || 'Sin nombre');
+      const cantidad = Number(detalle.cantidad || 0);
+      const precioUnitario = escapeHtml(formatCurrency(Number(detalle.precioUnitario || 0)));
+      const subtotal = escapeHtml(formatCurrency(Number(detalle.subtotal || 0)));
+      const color = escapeHtml(detalle.color || '—');
+      const talla = escapeHtml(detalle.talla || '—');
+      const imei = escapeHtml(detalle.imei || '—');
+
+      return `
+        <tr>
+          <td>${producto}</td>
+          <td>${cantidad}</td>
+          <td>${color}</td>
+          <td>${talla}</td>
+          <td>${imei}</td>
+          <td>${precioUnitario}</td>
+          <td>${subtotal}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Comprobante Venta #${selectedVenta.id}</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 24px;
+            color: #111827;
+            font-size: 12px;
+          }
+          .sheet {
+            max-width: 980px;
+            margin: 0 auto;
+          }
+          .header {
+            border: 2px solid #111827;
+            padding: 14px;
+            margin-bottom: 16px;
+          }
+          .title {
+            font-size: 20px;
+            font-weight: bold;
+            margin: 0 0 6px;
+          }
+          .subtitle {
+            margin: 0;
+            color: #374151;
+          }
+          .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+          }
+          .box {
+            border: 1px solid #d1d5db;
+            padding: 10px;
+          }
+          .box h3 {
+            margin: 0 0 8px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+          }
+          .row {
+            margin-bottom: 4px;
+          }
+          .label {
+            font-weight: bold;
+            display: inline-block;
+            min-width: 125px;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+          }
+          th, td {
+            border: 1px solid #d1d5db;
+            padding: 6px;
+            text-align: left;
+          }
+          th {
+            background: #f3f4f6;
+            font-size: 11px;
+            text-transform: uppercase;
+          }
+          .totals {
+            margin-top: 12px;
+            margin-left: auto;
+            max-width: 340px;
+            border: 1px solid #d1d5db;
+            padding: 10px;
+          }
+          .totals .line {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+          }
+          .totals .line.total {
+            border-top: 1px solid #d1d5db;
+            padding-top: 6px;
+            margin-top: 6px;
+            font-size: 14px;
+            font-weight: bold;
+          }
+          @media print {
+            body {
+              padding: 12px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="sheet">
+          <div class="header">
+            <p class="title">Comprobante de Venta #${selectedVenta.id}</p>
+            <p class="subtitle">Fecha: ${escapeHtml(formatDateTimePrint(selectedVenta.fecha))}</p>
+          </div>
+
+          <div class="grid">
+            <div class="box">
+              <h3>Datos del Cliente</h3>
+              <div class="row"><span class="label">Nombre:</span>${clienteNombre}</div>
+              <div class="row"><span class="label">Documento:</span>${clienteDocumento}</div>
+              <div class="row"><span class="label">Teléfono:</span>${clienteTelefono}</div>
+              <div class="row"><span class="label">Correo:</span>${clienteCorreo}</div>
+              <div class="row"><span class="label">Dirección:</span>${clienteDireccion}</div>
+              <div class="row"><span class="label">Barrio:</span>${clienteBarrio}</div>
+              <div class="row"><span class="label">Ciudad:</span>${clienteCiudad}</div>
+              <div class="row"><span class="label">Departamento:</span>${clienteDepartamento}</div>
+            </div>
+
+            <div class="box">
+              <h3>Datos de la Venta</h3>
+              <div class="row"><span class="label">ID Venta:</span>#${selectedVenta.id}</div>
+              <div class="row"><span class="label">Vendedor:</span>${escapeHtml(selectedVenta.usuarioNombre || 'No disponible')}</div>
+              <div class="row"><span class="label">Tipo:</span>${escapeHtml(formatEnumLabel(selectedVenta.tipoVenta))}</div>
+              <div class="row"><span class="label">Medio de pago:</span>${escapeHtml(formatEnumLabel(selectedVenta.medioPago))}</div>
+              <div class="row"><span class="label">Estado:</span>${escapeHtml(formatEnumLabel(selectedVenta.estado))}</div>
+              <div class="row"><span class="label">Calificación:</span>${escapeHtml(selectedVenta.calificacion || 'Sin calificar')}</div>
+            </div>
+          </div>
+
+          <div class="box">
+            <h3>Detalle de Productos</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Cantidad</th>
+                  <th>Color</th>
+                  <th>Talla</th>
+                  <th>IMEI</th>
+                  <th>Precio Unitario</th>
+                  <th>Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${detalleRows}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="totals">
+            <div class="line"><span>Subtotal bruto</span><span>${escapeHtml(formatCurrency(subtotalBruto))}</span></div>
+            <div class="line"><span>Descuento</span><span>${escapeHtml(formatCurrency(descuento))}</span></div>
+            <div class="line total"><span>Total venta</span><span>${escapeHtml(formatCurrency(totalNeto))}</span></div>
+          </div>
+        </div>
+
+        <script>
+          window.onload = function () {
+            window.print();
+          };
+        </script>
+      </body>
+      </html>
+    `;
+
+    openPrintWindow(printContent);
   };
 
   const isVentaDevuelta = selectedVenta?.estado === 'devuelta';
@@ -565,6 +1003,7 @@ export default function Ventas() {
             />
           </div>
           <select
+            title="Filtrar ventas por estado"
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
             value={estadoFiltro}
             onChange={(event) => setEstadoFiltro(event.target.value)}
@@ -602,7 +1041,7 @@ export default function Ventas() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm overflow-hidden border border-gray-100">
+      <div className="bg-white rounded-lg shadow-sm overflow-hidden border border-gray-100 min-w-0">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-16 space-y-3 text-gray-500">
             <Loader2 className="w-8 h-8 animate-spin" />
@@ -627,7 +1066,8 @@ export default function Ventas() {
             <p className="text-gray-400 text-sm">Crea tu primera venta para comenzar</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
@@ -704,24 +1144,66 @@ export default function Ventas() {
               </tbody>
             </table>
           </div>
+          <div className="md:hidden divide-y divide-gray-100">
+            {filteredVentas.map((venta) => (
+              <div key={venta.id} className="p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-mono text-sm font-semibold text-gray-900">#{venta.id}</p>
+                    <p className="text-xs text-gray-500">
+                      {new Date(venta.fecha).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                    title="Ver detalle"
+                    onClick={() => openDetailModal(venta)}
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="text-sm">
+                  <p className="font-medium text-gray-900">{venta.clienteNombre}</p>
+                  <p className="text-gray-600">{formatEnumLabel(venta.tipoVenta)} · {formatEnumLabel(venta.medioPago)}</p>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-gray-900">{formatCurrency(venta.total)}</span>
+                  <span
+                    className={`inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-medium ${
+                      STATUS_STYLES[venta.estado] || 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {statusIcon(venta.estado)}
+                    <span className="capitalize">{formatEnumLabel(venta.estado)}</span>
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+          </>
         )}
       </div>
 
   {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6">
-          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col min-w-0">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b gap-4">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Nueva venta de contado</h3>
                 <p className="text-sm text-gray-500">Selecciona el cliente y los productos vendidos</p>
               </div>
-              <button className="p-2 rounded-full hover:bg-gray-100 text-gray-500" onClick={closeCreateModal}>
+              <button
+                className="p-2 rounded-full hover:bg-gray-100 text-gray-500"
+                onClick={closeCreateModal}
+                title="Cerrar modal de venta"
+              >
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
-              <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+              <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6">
                 {formError && (
                   <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
                     {formError}
@@ -732,6 +1214,7 @@ export default function Ventas() {
                   <div className="md:col-span-2 lg:col-span-3">
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Cliente *</label>
                     <select
+                      title="Cliente de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                       value={formClienteId}
                       onChange={(event) => setFormClienteId(event.target.value)}
@@ -750,6 +1233,7 @@ export default function Ventas() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Tipo de venta *</label>
                     <select
+                      title="Tipo de venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 capitalize"
                       value={formTipoVenta}
                       onChange={(event) => setFormTipoVenta(event.target.value)}
@@ -768,6 +1252,7 @@ export default function Ventas() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Medio de pago *</label>
                     <select
+                      title="Medio de pago"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 capitalize"
                       value={formMedioPago}
                       onChange={(event) => setFormMedioPago(event.target.value)}
@@ -784,6 +1269,7 @@ export default function Ventas() {
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Fecha</label>
                     <input
                       type="datetime-local"
+                      title="Fecha de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                       value={formFecha}
                       onChange={(event) => setFormFecha(event.target.value)}
@@ -794,6 +1280,7 @@ export default function Ventas() {
                     <input
                       type="number"
                       min={0}
+                      title="Descuento de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                       value={formDescuento}
                       onChange={(event) => setFormDescuento(event.target.value)}
@@ -806,6 +1293,7 @@ export default function Ventas() {
                     <div>
                       <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Tipo de crédito *</label>
                       <select
+                        title="Tipo de crédito"
                         className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 capitalize"
                         value={formTipoCredito}
                         onChange={(event) => setFormTipoCredito(event.target.value)}
@@ -823,6 +1311,7 @@ export default function Ventas() {
                       <input
                         type="number"
                         min={1}
+                        title="Número de cuotas"
                         className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                         value={formNumeroCuotas}
                         onChange={(event) => setFormNumeroCuotas(event.target.value)}
@@ -834,15 +1323,17 @@ export default function Ventas() {
                       <input
                         type="number"
                         min={0}
-                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        title="Cuota inicial"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 bg-gray-100 cursor-not-allowed"
                         value={formCuotaInicial}
-                        onChange={(event) => setFormCuotaInicial(event.target.value)}
+                        readOnly
                       />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Fecha primer pago</label>
                       <input
                         type="date"
+                        title="Fecha del primer pago"
                         className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                         value={formFechaPrimerPago}
                         onChange={(event) => setFormFechaPrimerPago(event.target.value)}
@@ -864,11 +1355,16 @@ export default function Ventas() {
                   </div>
 
                   <div className="space-y-3">
-                    {formItems.map((item, index) => (
-                      <div key={item.id} className="grid grid-cols-1 md:grid-cols-[2fr,120px,140px,1fr,40px] gap-3 items-start bg-gray-50 border border-gray-200 rounded-xl p-4">
+                    {formItems.map((item, index) => {
+                      const maxCantidadDisponible = getMaxAvailableForItem(item, formItems);
+                      const sinStock = maxCantidadDisponible !== null && maxCantidadDisponible <= 0;
+
+                      return (
+                      <div key={item.id} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[2fr,110px,130px,1fr,1fr,1fr,40px] gap-3 items-start bg-gray-50 border border-gray-200 rounded-xl p-4 min-w-0">
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Producto *</label>
                           <select
+                            title="Producto del detalle"
                             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                             value={item.productoId}
                             onChange={(event) => handleItemChange(item.id, 'productoId', event.target.value)}
@@ -888,23 +1384,75 @@ export default function Ventas() {
                           <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Cantidad *</label>
                           <input
                             type="number"
-                            min={1}
+                            min={sinStock ? 0 : 1}
+                            max={maxCantidadDisponible ?? undefined}
+                            title="Cantidad del producto"
                             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                             value={item.cantidad}
                             onChange={(event) => handleItemChange(item.id, 'cantidad', event.target.value)}
                             required
                           />
+                          {maxCantidadDisponible !== null && (
+                            <p className={`mt-1 text-xs ${sinStock ? 'text-red-600' : 'text-gray-500'}`}>
+                              {sinStock
+                                ? 'Sin inventario disponible para esta selección'
+                                : `Disponible: ${maxCantidadDisponible}`}
+                            </p>
+                          )}
                         </div>
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Precio unitario *</label>
                           <input
                             type="number"
                             min={0}
+                            title="Precio unitario del producto"
                             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 bg-gray-100 cursor-not-allowed"
                             value={item.precioUnitario}
                             readOnly
                             required
                           />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Color *</label>
+                          <select
+                            title="Color del producto"
+                            className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                            value={item.color}
+                            onChange={(event) => handleItemChange(item.id, 'color', event.target.value)}
+                            required
+                          >
+                            <option value="" disabled>
+                              Selecciona color
+                            </option>
+                            {getProductoColoresDisponibles(
+                              productos.find((producto) => String(producto.id) === item.productoId)
+                            ).map((color) => (
+                              <option key={`${item.id}-color-${color.nombre}`} value={color.nombre}>
+                                {`${color.nombre} (${color.cantidad})`}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Talla *</label>
+                          <select
+                            title="Talla del producto"
+                            className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                            value={item.talla}
+                            onChange={(event) => handleItemChange(item.id, 'talla', event.target.value)}
+                            required
+                          >
+                            <option value="" disabled>
+                              Selecciona talla
+                            </option>
+                            {getProductoTallasDisponibles(
+                              productos.find((producto) => String(producto.id) === item.productoId)
+                            ).map((talla) => (
+                              <option key={`${item.id}-talla-${talla.nombre}`} value={talla.nombre}>
+                                {`${talla.nombre} (${talla.cantidad})`}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">IMEI (opcional)</label>
@@ -915,9 +1463,10 @@ export default function Ventas() {
                             placeholder="123456789012345"
                           />
                         </div>
-                        <div className="flex flex-col items-end justify-between h-full">
+                        <div className="flex sm:col-span-2 xl:col-span-1 flex-row xl:flex-col items-center xl:items-end justify-between h-full gap-2">
                           <button
                             type="button"
+                            title="Eliminar producto del detalle"
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             onClick={() => handleRemoveItem(item.id)}
                             disabled={formItems.length === 1}
@@ -929,7 +1478,8 @@ export default function Ventas() {
                           </p>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -957,7 +1507,7 @@ export default function Ventas() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-3 px-6 py-4 border-t bg-white">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-3 px-4 sm:px-6 py-4 border-t bg-white">
                 <button
                   type="button"
                   className="px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50"
@@ -987,21 +1537,25 @@ export default function Ventas() {
 
       {showDetailModal && selectedVenta && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6">
-          <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b">
+          <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col min-w-0">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b gap-4">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Venta #{selectedVenta.id}</h3>
                 <p className="text-sm text-gray-500">
                   Registrada el {new Date(selectedVenta.fecha).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
                 </p>
               </div>
-              <button className="p-2 rounded-full hover:bg-gray-100 text-gray-500" onClick={closeDetailModal}>
+              <button
+                className="p-2 rounded-full hover:bg-gray-100 text-gray-500"
+                onClick={closeDetailModal}
+                title="Cerrar detalle de venta"
+              >
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleUpdateVenta} className="flex-1 overflow-y-auto">
-              <div className="px-6 py-6 space-y-6">
+              <div className="px-4 sm:px-6 py-6 space-y-6">
                 {updateError && (
                   <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
                     {updateError}
@@ -1039,6 +1593,7 @@ export default function Ventas() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Estado</label>
                     <select
+                      title="Estado de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 capitalize"
                       value={editEstado}
                       onChange={(event) => setEditEstado(event.target.value)}
@@ -1059,6 +1614,7 @@ export default function Ventas() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Medio de pago</label>
                     <select
+                      title="Medio de pago de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500 capitalize"
                       value={editMedioPago}
                       onChange={(event) => setEditMedioPago(event.target.value)}
@@ -1074,6 +1630,7 @@ export default function Ventas() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Calificación</label>
                     <select
+                      title="Calificación de la venta"
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
                       value={editCalificacion}
                       onChange={(event) => setEditCalificacion(event.target.value as CalificacionCliente | '')}
@@ -1092,7 +1649,7 @@ export default function Ventas() {
                   <div className="px-4 py-3 border-b border-gray-200">
                     <h4 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">Detalle de productos</h4>
                   </div>
-                  <div className="overflow-x-auto">
+                  <div className="hidden md:block overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-100">
                         <tr>
@@ -1126,10 +1683,21 @@ export default function Ventas() {
                       </tbody>
                     </table>
                   </div>
+                  <div className="md:hidden divide-y divide-gray-200">
+                    {selectedVenta.detalles.map((detalle) => (
+                      <div key={detalle.id} className="p-3 space-y-1 text-sm">
+                        <p className="font-medium text-gray-900">{detalle.productoNombre}</p>
+                        <p className="text-gray-600">Cantidad: {detalle.cantidad}</p>
+                        <p className="text-gray-600">Precio: {formatCurrency(detalle.precioUnitario)}</p>
+                        <p className="text-gray-600">Subtotal: {formatCurrency(detalle.subtotal)}</p>
+                        <p className="text-gray-500">IMEI: {detalle.imei || '—'}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-3 px-6 py-4 border-t bg-white">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-3 px-4 sm:px-6 py-4 border-t bg-white">
                 <button
                   type="button"
                   className="px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50"
@@ -1137,6 +1705,14 @@ export default function Ventas() {
                   disabled={updateLoading || deleteLoading}
                 >
                   Cerrar
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-60"
+                  onClick={handlePrintVenta}
+                  disabled={updateLoading || deleteLoading}
+                >
+                  <Printer className="mr-2 h-4 w-4" /> Imprimir venta
                 </button>
                 <button
                   type="button"

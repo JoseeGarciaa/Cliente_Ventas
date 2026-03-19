@@ -10,6 +10,23 @@ interface EditEnvioModalProps {
   envio: Envio | null;
 }
 
+const OPERADORES_LOGISTICOS = [
+  'Servientrega',
+  'Inter Rapidísimo',
+  'Envía',
+  'TCC',
+  'Coordinadora',
+  'Deprisa',
+  '4-72',
+  'Domina Entrega Total',
+  'DHL Express',
+  'FedEx',
+  'UPS',
+  '99minutos',
+  'Moova',
+  'Propio',
+];
+
 export default function EditEnvioModal({ isOpen, onClose, onEnvioUpdated, envio }: EditEnvioModalProps) {
   const [formData, setFormData] = useState<UpdateEnvioPayload>({
     DireccionEntrega: '',
@@ -95,6 +112,7 @@ export default function EditEnvioModal({ isOpen, onClose, onEnvioUpdated, envio 
             </div>
           </div>
           <button
+            title="Cerrar modal"
             onClick={handleClose}
             className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
           >
@@ -116,6 +134,7 @@ export default function EditEnvioModal({ isOpen, onClose, onEnvioUpdated, envio 
                 Estado del Envío <span className="text-red-500">*</span>
               </label>
               <select
+                title="Estado del envío"
                 required
                 value={formData.Estado}
                 onChange={(e) => setFormData(prev => ({ ...prev, Estado: e.target.value as 'pendiente' | 'confirmada' | 'enviada' | 'entregada' | 'cancelada' | 'devuelta' }))}
@@ -141,6 +160,7 @@ export default function EditEnvioModal({ isOpen, onClose, onEnvioUpdated, envio 
                 Calificación
               </label>
               <select
+                title="Calificación del envío"
                 value={formData.Calificacion}
                 onChange={(e) => setFormData(prev => ({ ...prev, Calificacion: e.target.value as 'Pendiente' | 'Positivo' | 'Negativo' | 'Hurto' }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -245,13 +265,19 @@ export default function EditEnvioModal({ isOpen, onClose, onEnvioUpdated, envio 
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Operador Logístico
                 </label>
-                <input
-                  type="text"
+                <select
+                  title="Operador logístico"
                   value={formData.OperadorLogistico}
                   onChange={(e) => setFormData(prev => ({ ...prev, OperadorLogistico: e.target.value }))}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Ej: Servientrega, TCC, etc."
-                />
+                >
+                  <option value="">Selecciona un operador</option>
+                  {OPERADORES_LOGISTICOS.map((operador) => (
+                    <option key={operador} value={operador}>
+                      {operador}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">

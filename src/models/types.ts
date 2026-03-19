@@ -94,6 +94,21 @@ export interface CreateCategoriaPayload {
   tipoCategoria: TipoCategoria;
 }
 
+export interface ProductoColorStock {
+  nombre: string;
+  cantidad: number;
+}
+
+export interface ProductoTallaStock {
+  nombre: string;
+  cantidad: number;
+}
+
+export interface ProductoImagen {
+  nombreArchivo: string;
+  url: string;
+}
+
 export interface Producto {
   id: number;
   nombre: string;
@@ -107,9 +122,12 @@ export interface Producto {
   cantidad: number | null;
   costoDevolucion: number | null;
   imagenUrl: string | null;
+  imagenes: ProductoImagen[];
   estado: EstadoProducto;
   marca: string | null;
   modelo: string | null;
+  colores: ProductoColorStock[];
+  tallas: ProductoTallaStock[];
   fechaCreacion: string;
 }
 
@@ -121,12 +139,15 @@ export interface CreateProductoPayload {
   precioCredito: number;
   cuotaInicial?: number;
   imagenUrl?: string;
+  imagenes?: ProductoImagen[];
   estado?: EstadoProducto;
   marca?: string;
   modelo?: string;
   cantidad?: number;
   costoDevolucion?: number;
   precioVentaContado?: number;
+  colores?: ProductoColorStock[];
+  tallas?: ProductoTallaStock[];
 }
 
 export interface UpdateProductoPayload {
@@ -137,12 +158,15 @@ export interface UpdateProductoPayload {
   precioCredito: number;
   cuotaInicial?: number | null;
   imagenUrl?: string | null;
+  imagenes?: ProductoImagen[];
   estado?: EstadoProducto | null;
   marca?: string | null;
   modelo?: string | null;
   cantidad?: number | null;
   costoDevolucion?: number | null;
   precioVentaContado?: number | null;
+  colores?: ProductoColorStock[];
+  tallas?: ProductoTallaStock[];
 }
 
 export interface InventarioMetadata {
@@ -157,6 +181,8 @@ export interface VentaDetalle {
   cantidad: number;
   precioUnitario: number;
   subtotal: number;
+  color: string | null;
+  talla: string | null;
   imei: string | null;
 }
 
@@ -180,6 +206,8 @@ export interface CreateVentaDetalle {
   productoId: number;
   cantidad: number;
   precioUnitario: number;
+  color?: string;
+  talla?: string;
   imei?: string;
 }
 
@@ -212,6 +240,16 @@ export interface VentasMetadata {
   calificacionesCredito: CalificacionCliente[];
 }
 
+export interface DashboardStats {
+  ventasMes: number;
+  totalIngresos: number;
+  totalClientes: number;
+  creditosVencidos: number;
+  perdidasDevoluciones: number;
+  costoInventario: number;
+  totalVentas: number;
+}
+
 export interface UpdateVentaPayload {
   estado?: EstadoVenta;
   medioPago?: MedioPago;
@@ -239,6 +277,7 @@ export interface Envio {
 export interface EnvioVentaInfo {
   id: number;
   numero: number;
+  usuarioId?: number;
   fecha: string | null;
   total: number;
   estado: EstadoVenta | string;
@@ -397,10 +436,34 @@ export interface Pago {
 }
 
 export interface Usuario {
-  id: string;
+  id: number;
   nombre: string;
   email: string;
-  rol: 'admin' | 'vendedor' | 'almacen';
-  activo: boolean;
-  created_at: string;
+  rol: string;
+  estado: 'activo' | 'inactivo' | string;
+  telefono: string | null;
+  fechaCreacion: string;
+}
+
+export interface CreateUsuarioPayload {
+  nombre: string;
+  email: string;
+  password: string;
+  rol: string;
+  estado?: 'activo' | 'inactivo' | string;
+  telefono?: string | null;
+}
+
+export interface UpdateUsuarioPayload {
+  nombre?: string;
+  email?: string;
+  password?: string;
+  rol?: string;
+  estado?: 'activo' | 'inactivo' | string;
+  telefono?: string | null;
+}
+
+export interface UsuariosMetadata {
+  roles: string[];
+  estados: string[];
 }

@@ -76,6 +76,16 @@ function cuotaSaldo(cuota: CuotaCredito): number {
   return Math.max(Number((cuota.valor - cuota.valorPagado).toFixed(2)), 0);
 }
 
+function isCreditoVencido(credito: Credito): boolean {
+  const hoy = new Date();
+  return credito.cuotas.some((cuota) => {
+    if (!cuota.fechaVencimiento) return false;
+    const fecha = new Date(cuota.fechaVencimiento);
+    if (Number.isNaN(fecha.getTime())) return false;
+    return cuotaSaldo(cuota) > 0.01 && fecha.getTime() < hoy.getTime();
+  });
+}
+
 const estadoColors: Record<EstadoCredito | 'mora', string> = {
   activo: 'bg-blue-100 text-blue-700',
   pagado: 'bg-green-100 text-green-700',
@@ -126,7 +136,8 @@ export default function Creditos() {
     try {
       const data = await salesController.getCreditos();
       setCreditos(data.creditos);
-      setStats(data.stats);
+      // Calculamos los indicadores desde los créditos cargados para mantener coherencia visual.
+      setStats(computeStats(data.creditos));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudieron cargar los créditos');
     } finally {
@@ -140,7 +151,6 @@ export default function Creditos() {
 
   useEffect(() => {
     fetchCreditos(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filteredCreditos = useMemo(() => {
@@ -165,6 +175,11 @@ export default function Creditos() {
   const totalPendientes = useMemo(
     () => filteredCreditos.reduce((acc, credito) => acc + credito.montoPendiente, 0),
     [filteredCreditos]
+  );
+
+  const creditosVencidosCount = useMemo(
+    () => creditos.reduce((acc, credito) => (isCreditoVencido(credito) ? acc + 1 : acc), 0),
+    [creditos]
   );
 
   const totalCobrado = useMemo(
@@ -281,6 +296,7 @@ export default function Creditos() {
             />
           </div>
           <select
+            title="Filtrar créditos por estado"
             value={estadoFiltro}
             onChange={(event) => setEstadoFiltro(event.target.value as EstadoFiltro)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
@@ -314,7 +330,7 @@ export default function Creditos() {
         </div>
         <div className="bg-white rounded-lg shadow-sm p-6 border-l-4 border-yellow-500">
           <p className="text-gray-600 text-sm mb-1">Créditos Vencidos</p>
-          <p className="text-3xl font-bold text-gray-900">{stats.creditosVencidos}</p>
+          <p className="text-3xl font-bold text-gray-900">{creditosVencidosCount}</p>
         </div>
       </div>
 
@@ -374,11 +390,12 @@ export default function Creditos() {
                     : 0;
                   const proximaCuota = credito.proximaCuota;
                   const saldoProxima = proximaCuota ? cuotaSaldo(proximaCuota) : 0;
+                  const creditoVencido = isCreditoVencido(credito);
                   const expandido = expanded[credito.id];
 
                   return (
                     <Fragment key={credito.id}>
-                      <tr className="hover:bg-gray-50 transition-colors">
+                      <tr className={`transition-colors ${creditoVencido ? 'bg-red-50 hover:bg-red-100/60' : 'hover:bg-gray-50'}`}>
                         <td className="px-6 py-4">
                           <button
                             type="button"
@@ -402,9 +419,11 @@ export default function Creditos() {
                               {formatCurrency(credito.montoPagado)}
                             </span>
                             <div className="w-full bg-gray-200 rounded-full h-2">
-                              <div
-                                className="bg-green-500 h-2 rounded-full"
-                                style={{ width: `${porcentajePagado}%` }}
+                              <progress
+                                title="Porcentaje pagado del crédito"
+                                max={100}
+                                value={porcentajePagado}
+                                className="w-full h-2 [&::-webkit-progress-bar]:bg-gray-200 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-green-500 [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:bg-green-500 [&::-moz-progress-bar]:rounded-full"
                               />
                             </div>
                           </div>
@@ -434,8 +453,8 @@ export default function Creditos() {
                               credito.estado
                             )}`}
                           >
-                            {getStatusIcon(credito.estado)}
-                            <span className="capitalize">{credito.estado}</span>
+                            {creditoVencido ? <AlertCircle className="w-4 h-4" /> : getStatusIcon(credito.estado)}
+                            <span className="capitalize">{creditoVencido ? 'Vencido' : credito.estado}</span>
                           </span>
                         </td>
                         <td className="px-6 py-4 text-right">
@@ -512,19 +531,6 @@ export default function Creditos() {
         </div>
       </div>
 
-      <div className="bg-orange-50 border border-orange-200 rounded-lg p-6">
-        <div className="flex items-start space-x-3">
-          <AlertCircle className="w-6 h-6 text-orange-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h4 className="font-semibold text-gray-900 mb-1">Créditos en mora</h4>
-            <p className="text-gray-600 text-sm">
-              Actualmente tienes {stats.creditosVencidos} crédito(s) con cuotas vencidas. Da seguimiento oportuno para evitar
-              pérdidas.
-            </p>
-          </div>
-        </div>
-      </div>
-
       {showPagoModal && selectedCredito && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6 relative">
@@ -592,6 +598,7 @@ export default function Creditos() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Fecha de pago</label>
                 <input
+                  title="Fecha de pago"
                   type="date"
                   value={pagoFecha}
                   onChange={(event) => setPagoFecha(event.target.value)}

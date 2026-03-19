@@ -1,8 +1,48 @@
+import { useEffect, useState } from 'react';
 import { Filter, ShoppingCart, TrendingUp, Users, CreditCard, TrendingDown, DollarSign, BarChart3 } from 'lucide-react';
 import { salesController } from '../controllers/salesController';
+import type { DashboardStats } from '../models/types';
+
+const INITIAL_STATS: DashboardStats = {
+  ventasMes: 0,
+  totalIngresos: 0,
+  totalClientes: 0,
+  creditosVencidos: 0,
+  perdidasDevoluciones: 0,
+  costoInventario: 0,
+  totalVentas: 0,
+};
 
 export default function Dashboard() {
-  const stats = salesController.getDashboardStats();
+  const [stats, setStats] = useState<DashboardStats>(INITIAL_STATS);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadStats = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const nextStats = await salesController.getDashboardStats();
+        if (!isMounted) return;
+        setStats(nextStats);
+      } catch (err: unknown) {
+        if (!isMounted) return;
+        setError(err instanceof Error ? err.message : 'No fue posible cargar el dashboard');
+        setStats(INITIAL_STATS);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    loadStats();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -16,9 +56,13 @@ export default function Dashboard() {
         </div>
         <button className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
           <Filter className="w-4 h-4" />
-          <span>Filtrar por fecha</span>
+          <span>{loading ? 'Cargando...' : 'Filtrar por fecha'}</span>
         </button>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+      )}
 
       {/* Executive Summary */}
       <div>
@@ -54,7 +98,7 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center space-x-1 text-green-600">
               <TrendingUp className="w-4 h-4" />
-              <span className="text-sm font-medium">Total acumulado</span>
+              <span className="text-sm font-medium">Contado entregado + cuotas pagadas</span>
             </div>
           </div>
 
@@ -127,7 +171,7 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-600 rounded-full" style={{ width: '65%' }}></div>
+              <div className="h-full w-[65%] bg-blue-600 rounded-full"></div>
             </div>
           </div>
 
@@ -143,7 +187,7 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div className="h-full bg-purple-600 rounded-full" style={{ width: '45%' }}></div>
+              <div className="h-full w-[45%] bg-purple-600 rounded-full"></div>
             </div>
           </div>
         </div>

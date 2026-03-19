@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { login as loginRequest } from '../lib/api';
+import type { LoginResponse } from '../lib/api';
 
 type Props = {
-  onSuccess: (payload: { token: string; user: any; tenant: string }) => void;
+  onSuccess: (payload: LoginResponse) => void;
 };
 
 export default function Login({ onSuccess }: Props) {
@@ -18,8 +19,8 @@ export default function Login({ onSuccess }: Props) {
     try {
       const data = await loginRequest({ email, password });
       onSuccess(data);
-    } catch (err: any) {
-      setError(err.message || 'Error desconocido');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
     } finally {
       setLoading(false);
     }
@@ -35,8 +36,9 @@ export default function Login({ onSuccess }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Correo</label>
+            <label htmlFor="login-email" className="block text-sm font-medium text-gray-700">Correo</label>
             <input
+              id="login-email"
               required
               type="email"
               value={email}
@@ -47,12 +49,14 @@ export default function Login({ onSuccess }: Props) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Contraseña</label>
+            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700">Contraseña</label>
             <input
+              id="login-password"
               required
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              placeholder="Tu contraseña"
               className="mt-1 w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
             />
           </div>

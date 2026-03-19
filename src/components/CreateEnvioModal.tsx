@@ -10,6 +10,45 @@ interface CreateEnvioModalProps {
   venta?: VentaSinEnvio | null;
 }
 
+const OPERADORES_LOGISTICOS = [
+  'Servientrega',
+  'Inter Rapidísimo',
+  'Envía',
+  'TCC',
+  'Coordinadora',
+  'Deprisa',
+  '4-72',
+  'Domina Entrega Total',
+  'DHL Express',
+  'FedEx',
+  'UPS',
+  '99minutos',
+  'Moova',
+  'Propio',
+];
+
+const escapeHtml = (value: string | number | null | undefined) => {
+  const text = value == null ? '' : String(value);
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+};
+
+const buildLabelReference = (ventaId: number) => `ENV-${String(ventaId).padStart(8, '0')}`;
+
+const openPrintWindow = (content: string) => {
+  const printWindow = window.open('', '_blank', 'width=720,height=980');
+  if (!printWindow) {
+    window.alert('No se pudo abrir la ventana de impresión. Verifica el bloqueador de ventanas emergentes.');
+    return;
+  }
+  printWindow.document.write(content);
+  printWindow.document.close();
+};
+
 export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, venta }: CreateEnvioModalProps) {
   const [formData, setFormData] = useState<CreateEnvioPayload>({
     VentaId: 0,
@@ -96,6 +135,20 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
 
   const handlePrintLabel = () => {
     if (!venta) return;
+
+    const clienteNombre = escapeHtml(venta.cliente.nombre);
+    const clienteTipoId = escapeHtml(venta.cliente.tipoIdentificacion);
+    const clienteNumeroDoc = escapeHtml(venta.cliente.numeroDocumento);
+    const clienteTelefono = escapeHtml(venta.cliente.telefono || 'No registrado');
+    const clienteCorreo = escapeHtml(venta.cliente.correo || 'No registrado');
+    const direccionEntrega = escapeHtml(formData.DireccionEntrega || 'No registrada');
+    const barrio = escapeHtml(formData.Barrio);
+    const ciudad = escapeHtml(formData.Ciudad || 'No registrada');
+    const departamento = escapeHtml(formData.Departamento);
+    const operadorLogistico = escapeHtml(formData.OperadorLogistico);
+    const numeroGuia = escapeHtml(formData.NumeroGuia);
+    const observaciones = escapeHtml(formData.Observaciones);
+    const referencia = buildLabelReference(venta.id);
     
     // Crear contenido del rótulo
     const labelContent = `
@@ -186,38 +239,38 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
             <div class="section-title">DESTINATARIO</div>
             <div class="row">
               <span class="label-field">Nombre:</span>
-              ${venta.cliente.nombre}
+              ${clienteNombre}
             </div>
             <div class="row">
               <span class="label-field">Documento:</span>
-              ${venta.cliente.tipoIdentificacion} ${venta.cliente.numeroDocumento}
+              ${clienteTipoId} ${clienteNumeroDoc}
             </div>
             <div class="row">
               <span class="label-field">Teléfono:</span>
-              ${venta.cliente.telefono || 'No registrado'}
+              ${clienteTelefono}
             </div>
             <div class="row">
               <span class="label-field">Email:</span>
-              ${venta.cliente.correo || 'No registrado'}
+              ${clienteCorreo}
             </div>
             <div class="row">
               <span class="label-field">Dirección:</span>
-              ${formData.DireccionEntrega}
+              ${direccionEntrega}
             </div>
             ${formData.Barrio ? `
             <div class="row">
               <span class="label-field">Barrio:</span>
-              ${formData.Barrio}
+              ${barrio}
             </div>
             ` : ''}
             <div class="row">
               <span class="label-field">Ciudad:</span>
-              ${formData.Ciudad}
+              ${ciudad}
             </div>
             ${formData.Departamento ? `
             <div class="row">
               <span class="label-field">Departamento:</span>
-              ${formData.Departamento}
+              ${departamento}
             </div>
             ` : ''}
           </div>
@@ -243,13 +296,13 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
             ${formData.OperadorLogistico ? `
             <div class="row">
               <span class="label-field">Operador:</span>
-              ${formData.OperadorLogistico}
+              ${operadorLogistico}
             </div>
             ` : ''}
             ${formData.NumeroGuia ? `
             <div class="row">
               <span class="label-field">Guía:</span>
-              ${formData.NumeroGuia}
+              ${numeroGuia}
             </div>
             ` : ''}
           </div>
@@ -257,12 +310,12 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
           ${formData.Observaciones ? `
           <div class="section">
             <div class="section-title">OBSERVACIONES</div>
-            <div>${formData.Observaciones}</div>
+            <div>${observaciones}</div>
           </div>
           ` : ''}
 
           <div class="barcode">
-            ENV-${Date.now().toString().slice(-8)}
+            ${referencia}
           </div>
         </div>
 
@@ -275,12 +328,7 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
       </html>
     `;
 
-    // Abrir ventana de impresión
-    const printWindow = window.open('', '_blank', 'width=600,height=800');
-    if (printWindow) {
-      printWindow.document.write(labelContent);
-      printWindow.document.close();
-    }
+    openPrintWindow(labelContent);
   };
 
   if (!isOpen || !venta) return null;
@@ -294,6 +342,7 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
             <h2 className="text-xl font-semibold text-gray-900">Crear Envío</h2>
           </div>
           <button
+            title="Cerrar modal"
             onClick={handleClose}
             className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
           >
@@ -428,13 +477,19 @@ export default function CreateEnvioModal({ isOpen, onClose, onEnvioCreated, vent
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Operador Logístico
                 </label>
-                <input
-                  type="text"
+                <select
+                  title="Operador logístico"
                   value={formData.OperadorLogistico}
                   onChange={(e) => setFormData(prev => ({ ...prev, OperadorLogistico: e.target.value }))}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Ej: Servientrega, TCC, etc."
-                />
+                >
+                  <option value="">Selecciona un operador</option>
+                  {OPERADORES_LOGISTICOS.map((operador) => (
+                    <option key={operador} value={operador}>
+                      {operador}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">

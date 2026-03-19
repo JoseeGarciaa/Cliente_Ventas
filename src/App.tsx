@@ -11,11 +11,26 @@ import Pagos from './views/Pagos';
 import Usuarios from './views/Usuarios';
 import Login from './views/Login';
 import { auth, me } from './lib/api';
+import { FEATURE_PAGOS_VISIBLE } from './lib/featureFlags';
 
 function App() {
   const [currentView, setCurrentView] = useState('dashboard');
   const [session, setSession] = useState<{ user: any; tenant: string } | null>(null);
   const [checking, setChecking] = useState(true);
+  const isVendedor = String(session?.user?.rol || '').toLowerCase() === 'vendedor';
+  const vendedorAllowedViews = new Set(['clientes', 'inventario', 'ventas', 'envios']);
+
+  useEffect(() => {
+    if (isVendedor && !vendedorAllowedViews.has(currentView)) {
+      setCurrentView('ventas');
+    }
+  }, [isVendedor, currentView]);
+
+  useEffect(() => {
+    if (!FEATURE_PAGOS_VISIBLE && currentView === 'pagos') {
+      setCurrentView(isVendedor ? 'ventas' : 'dashboard');
+    }
+  }, [currentView, isVendedor]);
 
   useEffect(() => {
     const boot = async () => {
@@ -37,25 +52,25 @@ function App() {
   const renderView = () => {
     switch (currentView) {
       case 'dashboard':
-        return <Dashboard />;
+        return isVendedor ? <Ventas /> : <Dashboard />;
       case 'clientes':
         return <Clientes />;
       case 'inventario':
-        return <Inventario />;
+        return <Inventario user={session?.user} />;
       case 'ventas':
-        return <Ventas />;
+        return <Ventas user={session?.user} />;
       case 'envios':
-        return <Envios />;
+        return <Envios user={session?.user} />;
       case 'creditos':
-        return <Creditos />;
+        return isVendedor ? <Ventas /> : <Creditos />;
       case 'seguimiento':
-        return <Seguimiento />;
+        return isVendedor ? <Ventas /> : <Seguimiento />;
       case 'pagos':
-        return <Pagos />;
+        return isVendedor ? <Ventas /> : <Pagos />;
       case 'usuarios':
-        return <Usuarios />;
+        return isVendedor ? <Ventas /> : <Usuarios />;
       default:
-        return <Dashboard />;
+        return isVendedor ? <Ventas /> : <Dashboard />;
     }
   };
 
@@ -66,6 +81,9 @@ function App() {
       <Login
         onSuccess={(data) => {
           setSession({ user: data.user, tenant: data.tenant });
+          if (String(data?.user?.rol || '').toLowerCase() === 'vendedor') {
+            setCurrentView('ventas');
+          }
         }}
       />
     );
