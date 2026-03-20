@@ -27,6 +27,9 @@ import type {
   EnviosStats,
   VentasSinEnvioResponse,
   DashboardStats,
+  VentasPrintCompanyProfile,
+  VentasPrintState,
+  VentaPrintAudit,
 } from '../models/types';
 import { fetchWithAuth } from '../lib/api';
 import { inventoryController } from './inventoryController';
@@ -236,6 +239,98 @@ export const salesController = {
         talla: detalle.talla ?? null,
       })),
     }));
+  },
+
+  getVentasPrintState: async (): Promise<VentasPrintState> => {
+    const data = await fetchWithAuth<VentasPrintState>('/api/ventas/impresion/estado');
+    return {
+      empresa: {
+        nombre: String(data?.empresa?.nombre ?? 'Sistema Ventas'),
+        nit: String(data?.empresa?.nit ?? ''),
+        direccion: String(data?.empresa?.direccion ?? ''),
+        telefono: String(data?.empresa?.telefono ?? ''),
+        ciudad: String(data?.empresa?.ciudad ?? ''),
+      },
+      printedVentaIds: Array.isArray(data?.printedVentaIds)
+        ? data.printedVentaIds
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+        : [],
+      printedAudits: Array.isArray(data?.printedAudits)
+        ? data.printedAudits
+            .map((entry) => ({
+              ventaId: Number(entry.ventaId),
+              printedAt: entry.printedAt ? new Date(entry.printedAt).toISOString() : null,
+              printedByUserId:
+                entry.printedByUserId !== null && entry.printedByUserId !== undefined
+                  ? Number(entry.printedByUserId)
+                  : null,
+              printedByUserNombre: entry.printedByUserNombre ? String(entry.printedByUserNombre) : null,
+            }))
+            .filter((entry) => Number.isInteger(entry.ventaId) && entry.ventaId > 0)
+        : [],
+    };
+  },
+
+  saveVentasPrintCompanyProfile: async (payload: VentasPrintCompanyProfile): Promise<VentasPrintCompanyProfile> => {
+    const data = await fetchWithAuth<VentasPrintCompanyProfile>('/api/ventas/impresion/empresa', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      nombre: String(data?.nombre ?? 'Sistema Ventas'),
+      nit: String(data?.nit ?? ''),
+      direccion: String(data?.direccion ?? ''),
+      telefono: String(data?.telefono ?? ''),
+      ciudad: String(data?.ciudad ?? ''),
+    };
+  },
+
+  markVentasAsPrinted: async (ventaIds: number[]): Promise<{ markedIds: number[]; markedAudits: VentaPrintAudit[] }> => {
+    const cleanedIds = Array.from(
+      new Set(
+        (ventaIds || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      )
+    );
+
+    if (cleanedIds.length === 0) {
+      return { markedIds: [], markedAudits: [] };
+    }
+
+    const response = await fetchWithAuth<{ markedIds: number[]; markedAudits?: VentaPrintAudit[] }>('/api/ventas/impresion/marcar', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ventaIds: cleanedIds }),
+    });
+
+    return {
+      markedIds: Array.isArray(response?.markedIds)
+        ? response.markedIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0)
+        : [],
+      markedAudits: Array.isArray(response?.markedAudits)
+        ? response.markedAudits
+            .map((entry) => ({
+              ventaId: Number(entry.ventaId),
+              printedAt: entry.printedAt ? new Date(entry.printedAt).toISOString() : null,
+              printedByUserId:
+                entry.printedByUserId !== null && entry.printedByUserId !== undefined
+                  ? Number(entry.printedByUserId)
+                  : null,
+              printedByUserNombre: entry.printedByUserNombre ? String(entry.printedByUserNombre) : null,
+            }))
+            .filter((entry) => Number.isInteger(entry.ventaId) && entry.ventaId > 0)
+        : [],
+    };
   },
 
   createVentaContado: async (payload: CreateVentaContadoPayload): Promise<Venta> => {

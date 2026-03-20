@@ -25,6 +25,8 @@ import type {
   Venta,
   VentasMetadata,
   CreateCreditoPayload,
+  VentasPrintCompanyProfile,
+  VentaPrintAudit,
 } from '../models/types';
 
 const createItemId = () => {
@@ -66,11 +68,11 @@ const formatCurrency = (value: number) => currencyFormatter.format(value || 0);
 const escapeHtml = (value: string | number | null | undefined) => {
   const text = value == null ? '' : String(value);
   return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 };
 
 const formatDateTimePrint = (value: string) => {
@@ -79,14 +81,15 @@ const formatDateTimePrint = (value: string) => {
   return date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
 };
 
-const openPrintWindow = (content: string) => {
+const openPrintWindow = (content: string): boolean => {
   const printWindow = window.open('', '_blank', 'width=1024,height=900');
   if (!printWindow) {
     window.alert('No se pudo abrir la ventana de impresión. Revisa el bloqueador de ventanas emergentes.');
-    return;
+    return false;
   }
   printWindow.document.write(content);
   printWindow.document.close();
+  return true;
 };
 
 const formatDateTimeLocal = (date: Date) => {
@@ -106,6 +109,29 @@ const formatEnumLabel = (value: string) =>
     .join(' ');
 
 const CALIFICACIONES: CalificacionCliente[] = ['Pendiente', 'Positivo', 'Negativo', 'Hurto'];
+
+const DEFAULT_EMPRESA_PRINT_PROFILE: VentasPrintCompanyProfile = {
+  nombre: 'Sistema Ventas',
+  nit: '',
+  direccion: '',
+  telefono: '',
+  ciudad: '',
+};
+
+const resolveEstadoPagoLabel = (venta: Venta): string => {
+  const tipo = String(venta.tipoVenta || '').toLowerCase();
+  const estado = String(venta.estado || '').toLowerCase();
+
+  if (estado === 'cancelada' || estado === 'devuelta') {
+    return 'No pagado';
+  }
+
+  if (tipo === 'contado') {
+    return 'Pagado';
+  }
+
+  return 'Pendiente';
+};
 
 const DEFAULT_VENTAS_METADATA: VentasMetadata = {
   tiposVenta: ['contado', 'credito'],
@@ -238,6 +264,11 @@ export default function Ventas({ user }: VentasProps) {
   const [formFechaPrimerPago, setFormFechaPrimerPago] = useState(formatDateInput(new Date()));
   const [formError, setFormError] = useState<string | null>(null);
   const [submitLoading, setSubmitLoading] = useState(false);
+  const [empresaPrintProfile, setEmpresaPrintProfile] = useState<VentasPrintCompanyProfile>(DEFAULT_EMPRESA_PRINT_PROFILE);
+  const [massPrintedVentaIds, setMassPrintedVentaIds] = useState<number[]>([]);
+  const [printedVentaAudits, setPrintedVentaAudits] = useState<VentaPrintAudit[]>([]);
+  const [saveEmpresaLoading, setSaveEmpresaLoading] = useState(false);
+  const [saveEmpresaMessage, setSaveEmpresaMessage] = useState<string | null>(null);
 
   const selectedCliente = useMemo(() => {
     if (!selectedVenta) return null;
@@ -249,11 +280,16 @@ export default function Ventas({ user }: VentasProps) {
     const load = async () => {
       try {
         setLoading(true);
-        const [ventasData, metadataData, clientesData, productosData] = await Promise.all([
+        const [ventasData, metadataData, clientesData, productosData, printStateData] = await Promise.all([
           salesController.getVentas().catch(() => []),
           salesController.getVentasMetadata().catch(() => DEFAULT_VENTAS_METADATA),
           salesController.getClientes().catch(() => []),
           inventoryController.getProductos().catch(() => []),
+          salesController.getVentasPrintState().catch(() => ({
+            empresa: DEFAULT_EMPRESA_PRINT_PROFILE,
+            printedVentaIds: [],
+            printedAudits: [],
+          })),
         ]);
 
         if (!active) return;
@@ -261,6 +297,9 @@ export default function Ventas({ user }: VentasProps) {
         setMetadata(metadataData);
         setClientes(clientesData);
         setProductos(productosData);
+        setEmpresaPrintProfile(printStateData.empresa || DEFAULT_EMPRESA_PRINT_PROFILE);
+        setMassPrintedVentaIds(printStateData.printedVentaIds || []);
+        setPrintedVentaAudits(printStateData.printedAudits || []);
         if (metadataData.mediosPago.length > 0) {
           setFormMedioPago((prev) => prev || metadataData.mediosPago[0]);
         }
@@ -307,6 +346,21 @@ export default function Ventas({ user }: VentasProps) {
       setError(e instanceof Error ? e.message : 'No se pudieron cargar las ventas');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveEmpresaPrintProfile = async () => {
+    setSaveEmpresaMessage(null);
+    setSaveEmpresaLoading(true);
+    try {
+      const saved = await salesController.saveVentasPrintCompanyProfile(empresaPrintProfile);
+      setEmpresaPrintProfile(saved);
+      setSaveEmpresaMessage('Datos de empresa guardados en base de datos.');
+    } catch (e) {
+      console.error(e);
+      setSaveEmpresaMessage('No se pudo guardar la configuración de empresa.');
+    } finally {
+      setSaveEmpresaLoading(false);
     }
   };
 
@@ -782,6 +836,11 @@ export default function Ventas({ user }: VentasProps) {
     const clienteCiudad = escapeHtml(selectedCliente?.ciudad || 'No registrada');
     const clienteDepartamento = escapeHtml(selectedCliente?.departamento || 'No registrado');
     const clienteBarrio = escapeHtml(selectedCliente?.barrio || 'No registrado');
+    const empresaNombre = escapeHtml(empresaPrintProfile.nombre || 'Sistema Ventas');
+    const empresaNit = escapeHtml(empresaPrintProfile.nit || 'No registrado');
+    const empresaDireccion = escapeHtml(empresaPrintProfile.direccion || 'No registrada');
+    const empresaTelefono = escapeHtml(empresaPrintProfile.telefono || 'No registrado');
+    const empresaCiudad = escapeHtml(empresaPrintProfile.ciudad || 'No registrada');
 
     const detalleRows = selectedVenta.detalles.map((detalle) => {
       const producto = escapeHtml(detalle.productoNombre || 'Sin nombre');
@@ -911,6 +970,15 @@ export default function Ventas({ user }: VentasProps) {
 
           <div class="grid">
             <div class="box">
+              <h3>Datos de la Empresa (Remitente)</h3>
+              <div class="row"><span class="label">Empresa:</span>${empresaNombre}</div>
+              <div class="row"><span class="label">NIT/Documento:</span>${empresaNit}</div>
+              <div class="row"><span class="label">Dirección:</span>${empresaDireccion}</div>
+              <div class="row"><span class="label">Teléfono:</span>${empresaTelefono}</div>
+              <div class="row"><span class="label">Ciudad:</span>${empresaCiudad}</div>
+            </div>
+
+            <div class="box">
               <h3>Datos del Cliente</h3>
               <div class="row"><span class="label">Nombre:</span>${clienteNombre}</div>
               <div class="row"><span class="label">Documento:</span>${clienteDocumento}</div>
@@ -921,7 +989,9 @@ export default function Ventas({ user }: VentasProps) {
               <div class="row"><span class="label">Ciudad:</span>${clienteCiudad}</div>
               <div class="row"><span class="label">Departamento:</span>${clienteDepartamento}</div>
             </div>
+          </div>
 
+          <div class="grid">
             <div class="box">
               <h3>Datos de la Venta</h3>
               <div class="row"><span class="label">ID Venta:</span>#${selectedVenta.id}</div>
@@ -929,6 +999,7 @@ export default function Ventas({ user }: VentasProps) {
               <div class="row"><span class="label">Tipo:</span>${escapeHtml(formatEnumLabel(selectedVenta.tipoVenta))}</div>
               <div class="row"><span class="label">Medio de pago:</span>${escapeHtml(formatEnumLabel(selectedVenta.medioPago))}</div>
               <div class="row"><span class="label">Estado:</span>${escapeHtml(formatEnumLabel(selectedVenta.estado))}</div>
+              <div class="row"><span class="label">Estado de pago:</span>${escapeHtml(resolveEstadoPagoLabel(selectedVenta))}</div>
               <div class="row"><span class="label">Calificación:</span>${escapeHtml(selectedVenta.calificacion || 'Sin calificar')}</div>
             </div>
           </div>
@@ -972,6 +1043,288 @@ export default function Ventas({ user }: VentasProps) {
     openPrintWindow(printContent);
   };
 
+  const buildTirillaVentaMarkup = (venta: Venta, cliente: Cliente | null) => {
+    const empresaNombre = escapeHtml(empresaPrintProfile.nombre || 'Sistema Ventas');
+    const empresaNit = escapeHtml(empresaPrintProfile.nit || 'No registrado');
+    const empresaDireccion = escapeHtml(empresaPrintProfile.direccion || 'No registrada');
+    const empresaTelefono = escapeHtml(empresaPrintProfile.telefono || 'No registrado');
+    const empresaCiudad = escapeHtml(empresaPrintProfile.ciudad || 'No registrada');
+
+    const clienteNombre = escapeHtml(venta.clienteNombre || 'No disponible');
+    const clienteDocumento = cliente
+      ? `${escapeHtml(cliente.tipoIdentificacion)} ${escapeHtml(cliente.numeroDocumento)}`
+      : 'No disponible';
+    const clienteTelefono = escapeHtml(cliente?.telefono || 'No registrado');
+    const clienteDireccion = escapeHtml(cliente?.direccion || 'No registrada');
+    const clienteCiudad = escapeHtml(cliente?.ciudad || 'No registrada');
+    const estadoPago = escapeHtml(resolveEstadoPagoLabel(venta));
+
+    const items = venta.detalles.map((detalle) => {
+      const descripcion = [
+        detalle.productoNombre || 'Producto',
+        detalle.color ? `Color ${detalle.color}` : null,
+        detalle.talla ? `Talla ${detalle.talla}` : null,
+        detalle.imei ? `IMEI ${detalle.imei}` : null,
+      ].filter(Boolean).join(' - ');
+
+      return `
+        <div class="item">
+          <div class="desc">${escapeHtml(descripcion)}</div>
+          <div class="line">
+            <span>${Number(detalle.cantidad || 0)} x ${escapeHtml(formatCurrency(Number(detalle.precioUnitario || 0)))}</span>
+            <strong>${escapeHtml(formatCurrency(Number(detalle.subtotal || 0)))}</strong>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const subtotalBruto = venta.detalles.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
+    const descuento = Number(venta.descuento || 0);
+    const totalNeto = Number(venta.total || 0);
+
+    return `
+      <section class="ticket">
+        <div class="center strong">REMISION / FACTURA</div>
+        <div class="center strong">${empresaNombre}</div>
+        <div class="center small">NIT: ${empresaNit}</div>
+        <div class="center small">${empresaDireccion}</div>
+        <div class="center small">${empresaCiudad} | Tel: ${empresaTelefono}</div>
+
+        <div class="separator"></div>
+        <div><span class="strong">Venta:</span> #${venta.id}</div>
+        <div><span class="strong">Fecha:</span> ${escapeHtml(formatDateTimePrint(venta.fecha))}</div>
+        <div><span class="strong">Vendedor:</span> ${escapeHtml(venta.usuarioNombre || 'No disponible')}</div>
+
+        <div class="separator"></div>
+        <div class="strong">Cliente</div>
+        <div>${clienteNombre}</div>
+        <div class="small">Doc: ${clienteDocumento}</div>
+        <div class="small">Tel: ${clienteTelefono}</div>
+        <div class="small">Dir: ${clienteDireccion}</div>
+        <div class="small">Ciudad: ${clienteCiudad}</div>
+
+        <div class="separator"></div>
+        <div class="strong">Descripcion del pedido</div>
+        ${items || '<div class="small">Sin detalle disponible</div>'}
+
+        <div class="separator"></div>
+        <div class="line"><span>Subtotal</span><span>${escapeHtml(formatCurrency(subtotalBruto))}</span></div>
+        <div class="line"><span>Descuento</span><span>${escapeHtml(formatCurrency(descuento))}</span></div>
+        <div class="line strong"><span>Total</span><span>${escapeHtml(formatCurrency(totalNeto))}</span></div>
+
+        <div class="separator"></div>
+        <div><span class="strong">Tipo:</span> ${escapeHtml(formatEnumLabel(venta.tipoVenta))}</div>
+        <div><span class="strong">Medio pago:</span> ${escapeHtml(formatEnumLabel(venta.medioPago))}</div>
+        <div><span class="strong">Estado venta:</span> ${escapeHtml(formatEnumLabel(venta.estado))}</div>
+        <div><span class="strong">Estado de pago:</span> ${estadoPago}</div>
+
+        <div class="separator"></div>
+        <div class="center small">Gracias por su compra</div>
+      </section>
+    `;
+  };
+
+  const handlePrintTirilla = async () => {
+    if (!selectedVenta) return;
+
+    const ticketSection = buildTirillaVentaMarkup(selectedVenta, selectedCliente);
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Tirilla Venta #${selectedVenta.id}</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Courier New', monospace;
+            color: #111;
+            font-size: 11px;
+          }
+          .ticket {
+            width: 58mm;
+            max-width: 58mm;
+            margin: 0 auto;
+            padding: 8px 6px 10px;
+            box-sizing: border-box;
+          }
+          .center {
+            text-align: center;
+          }
+          .strong {
+            font-weight: 700;
+          }
+          .separator {
+            border-top: 1px dashed #000;
+            margin: 8px 0;
+          }
+          .line {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+          }
+          .item {
+            margin-bottom: 6px;
+          }
+          .desc {
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-bottom: 2px;
+          }
+          .small {
+            font-size: 10px;
+          }
+          @page {
+            size: 58mm auto;
+            margin: 3mm;
+          }
+        </style>
+      </head>
+      <body>
+        ${ticketSection}
+
+        <script>
+          window.onload = function () {
+            window.print();
+          };
+        </script>
+      </body>
+      </html>
+    `;
+
+    const didOpen = openPrintWindow(printContent);
+    if (didOpen) {
+      try {
+        const result = await salesController.markVentasAsPrinted([selectedVenta.id]);
+        const markedIds = result.markedIds;
+        if (markedIds.length > 0) {
+          setMassPrintedVentaIds((prev) => {
+            const next = new Set(prev);
+            markedIds.forEach((id) => next.add(id));
+            return Array.from(next);
+          });
+          if (result.markedAudits.length > 0) {
+            setPrintedVentaAudits((prev) => {
+              const next = new Map(prev.map((item) => [item.ventaId, item]));
+              result.markedAudits.forEach((audit) => next.set(audit.ventaId, audit));
+              return Array.from(next.values());
+            });
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
+  const pendingMassPrintVentas = useMemo(
+    () => ventas.filter((venta) => !massPrintedVentaIds.includes(venta.id)),
+    [ventas, massPrintedVentaIds]
+  );
+
+  const printedAuditByVentaId = useMemo(() => {
+    const map = new Map<number, VentaPrintAudit>();
+    printedVentaAudits.forEach((audit) => {
+      if (Number.isInteger(audit.ventaId) && audit.ventaId > 0) {
+        map.set(audit.ventaId, audit);
+      }
+    });
+    return map;
+  }, [printedVentaAudits]);
+
+  const handleMassPrintPendingVentas = async () => {
+    if (pendingMassPrintVentas.length === 0) {
+      window.alert('No hay ventas pendientes por imprimir.');
+      return;
+    }
+
+    const sections = pendingMassPrintVentas.map((venta) => {
+      const cliente = clientes.find((item) => item.id === venta.clienteId) ?? null;
+      return buildTirillaVentaMarkup(venta, cliente);
+    }).join('<div class="ticket-break"></div>');
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Tirillas pendientes (${pendingMassPrintVentas.length})</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Courier New', monospace;
+            color: #111;
+            font-size: 11px;
+          }
+          .ticket {
+            width: 58mm;
+            max-width: 58mm;
+            margin: 0 auto;
+            padding: 8px 6px 10px;
+            box-sizing: border-box;
+          }
+          .center { text-align: center; }
+          .strong { font-weight: 700; }
+          .separator { border-top: 1px dashed #000; margin: 8px 0; }
+          .line { display: flex; justify-content: space-between; gap: 6px; }
+          .item { margin-bottom: 6px; }
+          .desc { white-space: pre-wrap; word-break: break-word; margin-bottom: 2px; }
+          .small { font-size: 10px; }
+          .ticket-break {
+            break-after: page;
+            page-break-after: always;
+            height: 0;
+            margin: 0;
+            padding: 0;
+          }
+          .ticket-break:last-child {
+            display: none;
+          }
+          @page {
+            size: 58mm auto;
+            margin: 3mm;
+          }
+        </style>
+      </head>
+      <body>
+        ${sections}
+        <script>
+          window.onload = function () {
+            window.print();
+          };
+        </script>
+      </body>
+      </html>
+    `;
+
+    const didOpen = openPrintWindow(printContent);
+    if (didOpen) {
+      try {
+        const result = await salesController.markVentasAsPrinted(pendingMassPrintVentas.map((venta) => venta.id));
+        const markedIds = result.markedIds;
+        if (markedIds.length > 0) {
+          setMassPrintedVentaIds((prev) => {
+            const next = new Set(prev);
+            markedIds.forEach((id) => next.add(id));
+            return Array.from(next);
+          });
+          if (result.markedAudits.length > 0) {
+            setPrintedVentaAudits((prev) => {
+              const next = new Map(prev.map((item) => [item.ventaId, item]));
+              result.markedAudits.forEach((audit) => next.set(audit.ventaId, audit));
+              return Array.from(next.values());
+            });
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
   const isVentaDevuelta = selectedVenta?.estado === 'devuelta';
 
   return (
@@ -981,13 +1334,23 @@ export default function Ventas({ user }: VentasProps) {
           <h3 className="text-xl font-semibold text-gray-900">Registro de Ventas</h3>
           <p className="text-gray-600 text-sm mt-1">Gestiona y consulta todas las ventas realizadas</p>
         </div>
-        <button
-          className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-          onClick={openCreateModal}
-        >
-          <Plus className="w-4 h-4" />
-          <span>Nueva Venta</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            className="inline-flex items-center space-x-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            onClick={handleMassPrintPendingVentas}
+            title="Imprimir todas las ventas pendientes por tirilla"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Impresión masiva pendientes ({pendingMassPrintVentas.length})</span>
+          </button>
+          <button
+            className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            onClick={openCreateModal}
+          >
+            <Plus className="w-4 h-4" />
+            <span>Nueva Venta</span>
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-lg shadow-sm p-4">
@@ -1108,6 +1471,11 @@ export default function Ventas({ user }: VentasProps) {
                         dateStyle: 'medium',
                         timeStyle: 'short',
                       })}
+                      {printedAuditByVentaId.get(venta.id)?.printedAt && (
+                        <p className="mt-1 text-xs text-emerald-700">
+                          Impresa: {new Date(printedAuditByVentaId.get(venta.id)?.printedAt || '').toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })}
+                        </p>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className="font-medium text-gray-900">{venta.clienteNombre}</span>
@@ -1166,6 +1534,11 @@ export default function Ventas({ user }: VentasProps) {
                 <div className="text-sm">
                   <p className="font-medium text-gray-900">{venta.clienteNombre}</p>
                   <p className="text-gray-600">{formatEnumLabel(venta.tipoVenta)} · {formatEnumLabel(venta.medioPago)}</p>
+                  {printedAuditByVentaId.get(venta.id)?.printedAt && (
+                    <p className="text-xs text-emerald-700 mt-1">
+                      Impresa: {new Date(printedAuditByVentaId.get(venta.id)?.printedAt || '').toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-gray-900">{formatCurrency(venta.total)}</span>
@@ -1544,6 +1917,13 @@ export default function Ventas({ user }: VentasProps) {
                 <p className="text-sm text-gray-500">
                   Registrada el {new Date(selectedVenta.fecha).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
                 </p>
+                {printedAuditByVentaId.get(selectedVenta.id)?.printedAt && (
+                  <p className="text-xs text-emerald-700 mt-1">
+                    Impresa: {new Date(printedAuditByVentaId.get(selectedVenta.id)?.printedAt || '').toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })}
+                    {' · '}
+                    Por: {printedAuditByVentaId.get(selectedVenta.id)?.printedByUserNombre || 'Usuario no disponible'}
+                  </p>
+                )}
               </div>
               <button
                 className="p-2 rounded-full hover:bg-gray-100 text-gray-500"
@@ -1695,6 +2075,77 @@ export default function Ventas({ user }: VentasProps) {
                     ))}
                   </div>
                 </div>
+
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                  <h4 className="text-sm font-semibold text-gray-800 uppercase tracking-wide mb-3">
+                    Datos del remitente para impresión
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Empresa</label>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        value={empresaPrintProfile.nombre}
+                        onChange={(event) => setEmpresaPrintProfile((prev) => ({ ...prev, nombre: event.target.value }))}
+                        placeholder="Nombre de la empresa"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">NIT / Documento</label>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        value={empresaPrintProfile.nit}
+                        onChange={(event) => setEmpresaPrintProfile((prev) => ({ ...prev, nit: event.target.value }))}
+                        placeholder="NIT o identificación"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Dirección</label>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        value={empresaPrintProfile.direccion}
+                        onChange={(event) => setEmpresaPrintProfile((prev) => ({ ...prev, direccion: event.target.value }))}
+                        placeholder="Dirección de despacho"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Teléfono</label>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        value={empresaPrintProfile.telefono}
+                        onChange={(event) => setEmpresaPrintProfile((prev) => ({ ...prev, telefono: event.target.value }))}
+                        placeholder="Teléfono de contacto"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-600">Ciudad</label>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 focus:border-green-500 focus:ring-green-500"
+                        value={empresaPrintProfile.ciudad}
+                        onChange={(event) => setEmpresaPrintProfile((prev) => ({ ...prev, ciudad: event.target.value }))}
+                        placeholder="Ciudad de origen"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-3 flex-wrap">
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
+                      onClick={handleSaveEmpresaPrintProfile}
+                      disabled={saveEmpresaLoading}
+                    >
+                      {saveEmpresaLoading ? 'Guardando...' : 'Guardar datos de empresa'}
+                    </button>
+                    {saveEmpresaMessage && (
+                      <span className="text-xs text-gray-600">{saveEmpresaMessage}</span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-3 px-4 sm:px-6 py-4 border-t bg-white">
@@ -1713,6 +2164,14 @@ export default function Ventas({ user }: VentasProps) {
                   disabled={updateLoading || deleteLoading}
                 >
                   <Printer className="mr-2 h-4 w-4" /> Imprimir venta
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-60"
+                  onClick={handlePrintTirilla}
+                  disabled={updateLoading || deleteLoading}
+                >
+                  <Printer className="mr-2 h-4 w-4" /> Imprimir tirilla
                 </button>
                 <button
                   type="button"

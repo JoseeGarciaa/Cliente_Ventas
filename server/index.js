@@ -219,6 +219,61 @@ async function ensureClientesUsuarioSchema(db) {
   `);
 }
 
+async function ensureVentasPrintSchema(db) {
+  await db.query(`
+    create table if not exists "ConfiguracionImpresionVentas" (
+      id integer primary key,
+      "EmpresaNombre" text not null default 'Sistema Ventas',
+      "EmpresaNit" text,
+      "EmpresaDireccion" text,
+      "EmpresaTelefono" text,
+      "EmpresaCiudad" text,
+      "UpdatedAt" timestamptz not null default now()
+    )
+  `);
+
+  await db.query(`
+    insert into "ConfiguracionImpresionVentas" (
+      id,
+      "EmpresaNombre",
+      "EmpresaNit",
+      "EmpresaDireccion",
+      "EmpresaTelefono",
+      "EmpresaCiudad",
+      "UpdatedAt"
+    )
+    values (1, 'Sistema Ventas', '', '', '', '', now())
+    on conflict (id) do nothing
+  `);
+
+  await db.query(`
+    create table if not exists "VentasImpresas" (
+      "VentaId" integer primary key,
+      "PrintedAt" timestamptz not null default now(),
+      "PrintedByUserId" integer
+    )
+  `);
+
+  await db.query(`
+    do $$
+    begin
+      if not exists (
+        select 1
+          from pg_constraint
+         where conname = 'ventasimpresas_ventaid_fkey'
+      ) then
+        alter table "VentasImpresas"
+          add constraint ventasimpresas_ventaid_fkey
+          foreign key ("VentaId") references "Ventas" (id)
+          on delete cascade;
+      end if;
+    exception when undefined_table then
+      null;
+    end
+    $$;
+  `);
+}
+
 async function withTenantClient(tenant, fn) {
   if (!isValidSchemaName(tenant)) throw new Error('Tenant inválido');
   const client = await pool.connect();
@@ -1682,6 +1737,231 @@ app.get('/api/ventas', auth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).send('No se pudieron cargar las ventas');
+  }
+});
+
+app.get('/api/ventas/impresion/estado', auth, async (req, res) => {
+  const vendedor = isVendedorRequest(req);
+  const userId = getRequestUserId(req);
+  if (vendedor && !userId) {
+    return res.status(401).send('Usuario inválido para consultar estado de impresión');
+  }
+
+  try {
+    const payload = await withTenantClient(req.tenant, async (db) => {
+      await ensureVentasPrintSchema(db);
+
+      const configRes = await db.query(
+        `select
+           "EmpresaNombre" as empresa_nombre,
+           coalesce("EmpresaNit", '') as empresa_nit,
+           coalesce("EmpresaDireccion", '') as empresa_direccion,
+           coalesce("EmpresaTelefono", '') as empresa_telefono,
+           coalesce("EmpresaCiudad", '') as empresa_ciudad
+         from "ConfiguracionImpresionVentas"
+         where id = 1
+         limit 1`
+      );
+
+      const printedRes = vendedor
+        ? await db.query(
+            `select
+               vi."VentaId" as venta_id,
+               vi."PrintedAt" as printed_at,
+               vi."PrintedByUserId" as printed_by_user_id,
+               coalesce(u."Nombre", '') as printed_by_user_nombre
+               from "VentasImpresas" vi
+               join "Ventas" v on v.id = vi."VentaId"
+               left join "Usuarios" u on u.id = vi."PrintedByUserId"
+              where v."UsuarioId" = $1`,
+            [userId]
+          )
+        : await db.query(
+            `select
+               vi."VentaId" as venta_id,
+               vi."PrintedAt" as printed_at,
+               vi."PrintedByUserId" as printed_by_user_id,
+               coalesce(u."Nombre", '') as printed_by_user_nombre
+               from "VentasImpresas" vi
+               left join "Usuarios" u on u.id = vi."PrintedByUserId"`
+          );
+
+      const empresa = configRes.rowCount > 0 ? configRes.rows[0] : null;
+
+      return {
+        empresa: {
+          nombre: empresa?.empresa_nombre || 'Sistema Ventas',
+          nit: empresa?.empresa_nit || '',
+          direccion: empresa?.empresa_direccion || '',
+          telefono: empresa?.empresa_telefono || '',
+          ciudad: empresa?.empresa_ciudad || '',
+        },
+        printedVentaIds: printedRes.rows
+          .map((row) => Number(row.venta_id))
+          .filter((id) => Number.isInteger(id) && id > 0),
+        printedAudits: printedRes.rows
+          .map((row) => {
+            const ventaId = Number(row.venta_id);
+            if (!Number.isInteger(ventaId) || ventaId <= 0) return null;
+            return {
+              ventaId,
+              printedAt: row.printed_at ? new Date(row.printed_at).toISOString() : null,
+              printedByUserId:
+                row.printed_by_user_id !== null && row.printed_by_user_id !== undefined
+                  ? Number(row.printed_by_user_id)
+                  : null,
+              printedByUserNombre: row.printed_by_user_nombre || null,
+            };
+          })
+          .filter(Boolean),
+      };
+    });
+
+    res.json(payload);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('No se pudo obtener el estado de impresión de ventas');
+  }
+});
+
+app.put('/api/ventas/impresion/empresa', auth, async (req, res) => {
+  const { nombre = '', nit = '', direccion = '', telefono = '', ciudad = '' } = req.body || {};
+
+  const clean = (value, fallback = '') => {
+    const text = String(value ?? fallback).trim();
+    return text.slice(0, 200);
+  };
+
+  const empresaNombre = clean(nombre, 'Sistema Ventas') || 'Sistema Ventas';
+  const empresaNit = clean(nit);
+  const empresaDireccion = clean(direccion);
+  const empresaTelefono = clean(telefono);
+  const empresaCiudad = clean(ciudad);
+
+  try {
+    const empresa = await withTenantClient(req.tenant, async (db) => {
+      await ensureVentasPrintSchema(db);
+
+      const result = await db.query(
+        `update "ConfiguracionImpresionVentas"
+            set "EmpresaNombre" = $1,
+                "EmpresaNit" = $2,
+                "EmpresaDireccion" = $3,
+                "EmpresaTelefono" = $4,
+                "EmpresaCiudad" = $5,
+                "UpdatedAt" = now()
+          where id = 1
+          returning
+            "EmpresaNombre" as nombre,
+            coalesce("EmpresaNit", '') as nit,
+            coalesce("EmpresaDireccion", '') as direccion,
+            coalesce("EmpresaTelefono", '') as telefono,
+            coalesce("EmpresaCiudad", '') as ciudad`,
+        [empresaNombre, empresaNit, empresaDireccion, empresaTelefono, empresaCiudad]
+      );
+
+      return result.rows[0];
+    });
+
+    res.json(empresa);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('No se pudo guardar la configuración de impresión');
+  }
+});
+
+app.post('/api/ventas/impresion/marcar', auth, async (req, res) => {
+  const vendedor = isVendedorRequest(req);
+  const userId = getRequestUserId(req);
+  if (vendedor && !userId) {
+    return res.status(401).send('Usuario inválido para marcar impresiones');
+  }
+
+  const ventaIdsRaw = Array.isArray(req.body?.ventaIds) ? req.body.ventaIds : [];
+  const ventaIds = Array.from(
+    new Set(
+      ventaIdsRaw
+        .map((value) => Number(value))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    )
+  );
+
+  if (ventaIds.length === 0) {
+    return res.status(400).send('Debes enviar al menos un id de venta válido');
+  }
+
+  try {
+    const payload = await withTenantClient(req.tenant, async (db) => {
+      await ensureVentasPrintSchema(db);
+
+      const accesiblesRes = vendedor
+        ? await db.query(
+            `select id
+               from "Ventas"
+              where id = any($1::int[])
+                and "UsuarioId" = $2`,
+            [ventaIds, userId]
+          )
+        : await db.query(
+            `select id
+               from "Ventas"
+              where id = any($1::int[])`,
+            [ventaIds]
+          );
+
+      const accesibles = accesiblesRes.rows
+        .map((row) => Number(row.id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (accesibles.length === 0) {
+        return { markedIds: [], markedAudits: [] };
+      }
+
+      await db.query(
+        `insert into "VentasImpresas" ("VentaId", "PrintedAt", "PrintedByUserId")
+         select unnest($1::int[]), now(), $2
+         on conflict ("VentaId") do update
+           set "PrintedAt" = excluded."PrintedAt",
+               "PrintedByUserId" = excluded."PrintedByUserId"`,
+        [accesibles, userId]
+      );
+
+      const auditsRes = await db.query(
+        `select
+           vi."VentaId" as venta_id,
+           vi."PrintedAt" as printed_at,
+           vi."PrintedByUserId" as printed_by_user_id,
+           coalesce(u."Nombre", '') as printed_by_user_nombre
+           from "VentasImpresas" vi
+           left join "Usuarios" u on u.id = vi."PrintedByUserId"
+          where vi."VentaId" = any($1::int[])`,
+        [accesibles]
+      );
+
+      return {
+        markedIds: accesibles,
+        markedAudits: auditsRes.rows
+          .map((row) => {
+            const ventaId = Number(row.venta_id);
+            if (!Number.isInteger(ventaId) || ventaId <= 0) return null;
+            return {
+              ventaId,
+              printedAt: row.printed_at ? new Date(row.printed_at).toISOString() : null,
+              printedByUserId:
+                row.printed_by_user_id !== null && row.printed_by_user_id !== undefined
+                  ? Number(row.printed_by_user_id)
+                  : null,
+              printedByUserNombre: row.printed_by_user_nombre || null,
+            };
+          })
+          .filter(Boolean),
+      };
+    });
+
+    res.json(payload);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('No se pudieron marcar las ventas como impresas');
   }
 });
 

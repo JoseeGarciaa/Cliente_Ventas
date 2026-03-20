@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -15,6 +15,8 @@ import {
   X,
 } from 'lucide-react';
 import { FEATURE_PAGOS_VISIBLE } from '../lib/featureFlags';
+import { salesController } from '../controllers/salesController';
+import { subscribeVentasEnviosSync } from '../lib/syncEvents';
 
 interface LayoutProps {
   children: ReactNode;
@@ -39,6 +41,7 @@ const menuItems = [
 
 export default function Layout({ children, currentView, onNavigate, user, tenant, onLogout }: LayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [notificationCount, setNotificationCount] = useState(0);
   const userRole = String(user?.rol || '').toLowerCase();
   const vendedorAllowedViews = new Set(['clientes', 'inventario', 'ventas', 'envios']);
   const baseMenuItems = FEATURE_PAGOS_VISIBLE ? menuItems : menuItems.filter((item) => item.id !== 'pagos');
@@ -46,11 +49,108 @@ export default function Layout({ children, currentView, onNavigate, user, tenant
     userRole === 'vendedor'
       ? baseMenuItems.filter((item) => vendedorAllowedViews.has(item.id))
       : baseMenuItems;
+  const knownVentaIdsRef = useRef<Set<number>>(new Set());
+  const initializedRef = useRef(false);
+  const loadingAlertsRef = useRef(false);
+
+  const playAlertTone = () => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(880, context.currentTime);
+      oscillator.frequency.linearRampToValueAtTime(1175, context.currentTime + 0.18);
+
+      gain.gain.setValueAtTime(0.001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.2, context.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.24);
+
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.24);
+
+      window.setTimeout(() => {
+        context.close().catch(() => undefined);
+      }, 500);
+    } catch {
+      // Ignora errores de autoplay o de contexto de audio no disponible.
+    }
+  };
+
+  const refreshSalesAlerts = async (playSound: boolean) => {
+    if (loadingAlertsRef.current || userRole === 'vendedor') return;
+
+    loadingAlertsRef.current = true;
+    try {
+      const ventas = await salesController.getVentas();
+      const nextIds = new Set(
+        ventas
+          .map((venta) => Number(venta.id))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      );
+
+      if (!initializedRef.current) {
+        knownVentaIdsRef.current = nextIds;
+        initializedRef.current = true;
+        return;
+      }
+
+      let newCount = 0;
+      nextIds.forEach((id) => {
+        if (!knownVentaIdsRef.current.has(id)) {
+          newCount += 1;
+        }
+      });
+
+      knownVentaIdsRef.current = nextIds;
+      if (newCount > 0) {
+        setNotificationCount((prev) => prev + newCount);
+        if (playSound) {
+          playAlertTone();
+        }
+      }
+    } catch {
+      // Si falla consulta de ventas, no interrumpe navegación.
+    } finally {
+      loadingAlertsRef.current = false;
+    }
+  };
 
   const handleNavigate = (view: string) => {
     onNavigate(view);
     setMobileMenuOpen(false);
   };
+
+  useEffect(() => {
+    if (userRole === 'vendedor') {
+      setNotificationCount(0);
+      knownVentaIdsRef.current = new Set();
+      initializedRef.current = true;
+      return;
+    }
+
+    initializedRef.current = false;
+    refreshSalesAlerts(false);
+
+    const intervalId = window.setInterval(() => {
+      refreshSalesAlerts(true);
+    }, 15000);
+
+    const unsubscribe = subscribeVentasEnviosSync((source) => {
+      if (source !== 'ventas') return;
+      refreshSalesAlerts(true);
+    });
+
+    return () => {
+      window.clearInterval(intervalId);
+      unsubscribe();
+    };
+  }, [userRole]);
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-x-hidden">
@@ -200,10 +300,21 @@ export default function Layout({ children, currentView, onNavigate, user, tenant
             </div>
             <div className="flex items-center space-x-3 sm:space-x-6">
               <div className="relative">
-                <Bell className="w-6 h-6 text-gray-600 cursor-pointer hover:text-gray-800" />
-                <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs flex items-center justify-center rounded-full">
-                  2
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setNotificationCount(0)}
+                  title={notificationCount > 0 ? 'Limpiar notificaciones de ventas nuevas' : 'Sin notificaciones nuevas'}
+                  className="p-0 bg-transparent border-0"
+                >
+                  <Bell
+                    className={`w-6 h-6 cursor-pointer transition-colors ${notificationCount > 0 ? 'text-red-600 hover:text-red-700' : 'text-gray-600 hover:text-gray-800'}`}
+                  />
+                </button>
+                {notificationCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-500 text-white text-xs flex items-center justify-center rounded-full">
+                    {notificationCount > 99 ? '99+' : notificationCount}
+                  </span>
+                )}
               </div>
               <button onClick={onLogout} className="hidden sm:flex items-center space-x-2 text-gray-600 hover:text-gray-800">
                 <LogOut className="w-5 h-5" />

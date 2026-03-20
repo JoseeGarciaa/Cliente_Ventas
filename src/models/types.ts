@@ -467,3 +467,24 @@ export interface UsuariosMetadata {
   roles: string[];
   estados: string[];
 }
+
+export interface VentasPrintCompanyProfile {
+  nombre: string;
+  nit: string;
+  direccion: string;
+  telefono: string;
+  ciudad: string;
+}
+
+export interface VentaPrintAudit {
+  ventaId: number;
+  printedAt: string | null;
+  printedByUserId: number | null;
+  printedByUserNombre: string | null;
+}
+
+export interface VentasPrintState {
+  empresa: VentasPrintCompanyProfile;
+  printedVentaIds: number[];
+  printedAudits: VentaPrintAudit[];
+}
