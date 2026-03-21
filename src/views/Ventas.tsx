@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus,
   Search,
@@ -269,6 +269,8 @@ export default function Ventas({ user }: VentasProps) {
   const [printedVentaAudits, setPrintedVentaAudits] = useState<VentaPrintAudit[]>([]);
   const [saveEmpresaLoading, setSaveEmpresaLoading] = useState(false);
   const [saveEmpresaMessage, setSaveEmpresaMessage] = useState<string | null>(null);
+  const knownVentaIdsRef = useRef<Set<number>>(new Set());
+  const pollingVentasRef = useRef(false);
 
   const selectedCliente = useMemo(() => {
     if (!selectedVenta) return null;
@@ -328,7 +330,6 @@ export default function Ventas({ user }: VentasProps) {
 
   useEffect(() => {
     const unsubscribe = subscribeVentasEnviosSync((source) => {
-      if (source === 'ventas') return;
       handleReload({ silent: true });
     });
 
@@ -353,6 +354,53 @@ export default function Ventas({ user }: VentasProps) {
       }
     }
   };
+
+  useEffect(() => {
+    knownVentaIdsRef.current = new Set(
+      ventas
+        .map((venta) => Number(venta.id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    );
+  }, [ventas]);
+
+  useEffect(() => {
+    const refreshIfVentasChanged = async () => {
+      if (pollingVentasRef.current) return;
+      pollingVentasRef.current = true;
+
+      try {
+        const ids = await salesController.getVentasIds();
+        const nextIds = new Set(ids);
+        const currentIds = knownVentaIdsRef.current;
+
+        let changed = nextIds.size !== currentIds.size;
+        if (!changed) {
+          for (const id of nextIds) {
+            if (!currentIds.has(id)) {
+              changed = true;
+              break;
+            }
+          }
+        }
+
+        if (changed) {
+          await handleReload({ silent: true });
+        }
+      } catch {
+        // No interrumpe la vista si falla un ciclo de sondeo.
+      } finally {
+        pollingVentasRef.current = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshIfVentasChanged();
+    }, 8000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const handleSaveEmpresaPrintProfile = async () => {
     setSaveEmpresaMessage(null);
