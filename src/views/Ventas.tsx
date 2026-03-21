@@ -1444,6 +1444,9 @@ export default function Ventas({ user }: VentasProps) {
                     Cliente
                   </th>
                   <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                    Vendedor
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                     Tipo Venta
                   </th>
                   <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
@@ -1479,6 +1482,9 @@ export default function Ventas({ user }: VentasProps) {
                     </td>
                     <td className="px-6 py-4">
                       <span className="font-medium text-gray-900">{venta.clienteNombre}</span>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-600">
+                      {venta.usuarioNombre || 'No disponible'}
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-600 capitalize">{formatEnumLabel(venta.tipoVenta)}</td>
                     <td className="px-6 py-4">
@@ -1533,6 +1539,7 @@ export default function Ventas({ user }: VentasProps) {
                 </div>
                 <div className="text-sm">
                   <p className="font-medium text-gray-900">{venta.clienteNombre}</p>
+                  <p className="text-gray-600">Vendedor: {venta.usuarioNombre || 'No disponible'}</p>
                   <p className="text-gray-600">{formatEnumLabel(venta.tipoVenta)} · {formatEnumLabel(venta.medioPago)}</p>
                   {printedAuditByVentaId.get(venta.id)?.printedAt && (
                     <p className="text-xs text-emerald-700 mt-1">
