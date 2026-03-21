@@ -302,7 +302,7 @@ export default function Inventario({ user }: InventarioProps) {
     const totalProducto = Number(producto.cantidad ?? 0);
 
     const normalizeFormRows = (
-      rows: Array<Record<string, unknown>> | undefined,
+      rows: Array<unknown> | undefined,
       fallbackNombre: string
     ): Array<{ nombre: string; cantidad: string }> => {
       const safeRows = Array.isArray(rows) ? rows : [];
@@ -315,10 +315,11 @@ export default function Inventario({ user }: InventarioProps) {
       }
 
       const normalized = safeRows.map((item) => {
-        const nombreRaw = item.nombre ?? item.color ?? item.talla ?? '';
+        const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+        const nombreRaw = row.nombre ?? row.color ?? row.talla ?? '';
         const nombre = String(nombreRaw ?? '').trim();
 
-        const cantidadRaw = item.cantidad ?? item.stock ?? item.qty ?? item.cantidadStock;
+        const cantidadRaw = row.cantidad ?? row.stock ?? row.qty ?? row.cantidadStock;
         const cantidadTexto =
           cantidadRaw === null || cantidadRaw === undefined ? '' : String(cantidadRaw).trim();
         const cantidadNumerica = cantidadTexto.length > 0 ? Number(cantidadTexto) : Number.NaN;
@@ -349,7 +350,7 @@ export default function Inventario({ user }: InventarioProps) {
         }
       }
 
-      const completadas = normalized.map((row, index) => {
+      const completadas = normalized.map((row) => {
         if (row.cantidad.trim().length > 0) return row;
         if (normalized.length === 1 && totalProducto > 0) {
           return { ...row, cantidad: String(totalProducto) };
@@ -413,8 +414,8 @@ export default function Inventario({ user }: InventarioProps) {
       marca: producto.marca ?? '',
       modelo: producto.modelo ?? '',
       estado: producto.estado ?? '',
-      colores: normalizeFormRows((producto.colores as Array<Record<string, unknown>> | undefined) ?? [], 'Único'),
-      tallas: normalizeFormRows((producto.tallas as Array<Record<string, unknown>> | undefined) ?? [], 'Única'),
+      colores: normalizeFormRows(producto.colores ?? [], 'Único'),
+      tallas: normalizeFormRows(producto.tallas ?? [], 'Única'),
     };
   };
 

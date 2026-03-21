@@ -329,15 +329,18 @@ export default function Ventas({ user }: VentasProps) {
   useEffect(() => {
     const unsubscribe = subscribeVentasEnviosSync((source) => {
       if (source === 'ventas') return;
-      handleReload();
+      handleReload({ silent: true });
     });
 
     return unsubscribe;
   }, []);
 
-  const handleReload = async () => {
+  const handleReload = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       const ventasData = await salesController.getVentas();
       setVentas(ventasData);
       setError(null);
@@ -345,7 +348,9 @@ export default function Ventas({ user }: VentasProps) {
       console.error(e);
       setError(e instanceof Error ? e.message : 'No se pudieron cargar las ventas');
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
@@ -741,6 +746,7 @@ export default function Ventas({ user }: VentasProps) {
       const venta = await salesController.createVentaContado(payload);
       setVentas((prev) => [venta, ...prev]);
       emitVentasEnviosSync('ventas');
+      void handleReload({ silent: true });
       resetForm();
       setShowCreateModal(false);
     } catch (e) {
@@ -1378,7 +1384,7 @@ export default function Ventas({ user }: VentasProps) {
               </option>
             ))}
           </select>
-          <button className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors" onClick={handleReload}>
+          <button className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors" onClick={() => void handleReload()}>
             <Calendar className="w-4 h-4" />
             <span>Actualizar</span>
           </button>
@@ -1415,7 +1421,7 @@ export default function Ventas({ user }: VentasProps) {
             <p className="text-red-600 font-medium">{error}</p>
             <button
               className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-              onClick={handleReload}
+              onClick={() => void handleReload()}
             >
               Reintentar
             </button>

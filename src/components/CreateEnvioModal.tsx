@@ -30,11 +30,11 @@ const OPERADORES_LOGISTICOS = [
 const escapeHtml = (value: string | number | null | undefined) => {
   const text = value == null ? '' : String(value);
   return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 };
 
 const buildLabelReference = (ventaId: number) => `ENV-${String(ventaId).padStart(8, '0')}`;

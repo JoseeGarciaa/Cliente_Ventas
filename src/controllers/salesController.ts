@@ -241,6 +241,15 @@ export const salesController = {
     }));
   },
 
+  getVentasIds: async (): Promise<number[]> => {
+    const data = await fetchWithAuth<{ ids?: number[] }>('/api/ventas/ids');
+    return Array.isArray(data?.ids)
+      ? data.ids
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0)
+      : [];
+  },
+
   getVentasPrintState: async (): Promise<VentasPrintState> => {
     const data = await fetchWithAuth<VentasPrintState>('/api/ventas/impresion/estado');
     return {

@@ -87,10 +87,10 @@ export default function Layout({ children, currentView, onNavigate, user, tenant
 
     loadingAlertsRef.current = true;
     try {
-      const ventas = await salesController.getVentas();
+      const ventaIds = await salesController.getVentasIds();
       const nextIds = new Set(
-        ventas
-          .map((venta) => Number(venta.id))
+        ventaIds
+          .map((id) => Number(id))
           .filter((id) => Number.isInteger(id) && id > 0)
       );
 

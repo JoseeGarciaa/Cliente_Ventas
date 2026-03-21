@@ -1740,6 +1740,45 @@ app.get('/api/ventas', auth, async (req, res) => {
   }
 });
 
+app.get('/api/ventas/ids', auth, async (req, res) => {
+  const vendedor = isVendedorRequest(req);
+  const userId = getRequestUserId(req);
+  if (vendedor && !userId) {
+    return res.status(401).send('Usuario inválido para consultar ventas');
+  }
+
+  try {
+    const ids = await withTenantClient(req.tenant, async (db) => {
+      const params = [];
+      const whereParts = [];
+
+      if (vendedor) {
+        params.push(userId);
+        whereParts.push(`"UsuarioId" = $${params.length}`);
+      }
+
+      const whereClause = whereParts.length > 0 ? `where ${whereParts.join(' and ')}` : '';
+      const query = `
+        select id
+        from "Ventas"
+        ${whereClause}
+        order by "Fecha" desc
+        limit 300
+      `;
+
+      const result = params.length > 0 ? await db.query(query, params) : await db.query(query);
+      return result.rows
+        .map((row) => Number(row.id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+    });
+
+    res.json({ ids });
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('No se pudieron cargar los ids de ventas');
+  }
+});
+
 app.get('/api/ventas/impresion/estado', auth, async (req, res) => {
   const vendedor = isVendedorRequest(req);
   const userId = getRequestUserId(req);
